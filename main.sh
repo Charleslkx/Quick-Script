@@ -58,23 +58,24 @@ install_dependencies() {
 }
 
 ensure_network_stack() {
-    local ipv4 ipv6
-    ipv4=$(curl -4 -s --max-time 4 https://api.ipify.org || true)
-    if [[ -n $ipv4 ]]; then
-        ACTIVE_IP_VERSION=4
-        PUBLIC_IP="$ipv4"
-        log info "检测到 IPv4 地址：$ipv4，将优先使用 IPv4"
-        return
-    fi
-    log warn "未检测到可用的公网 IPv4，尝试使用 IPv6"
-    ipv6=$(curl -6 -s --max-time 4 https://api64.ipify.org || true)
-    if [[ -n $ipv6 ]]; then
-        ACTIVE_IP_VERSION=6
-        PUBLIC_IP="$ipv6"
-        log info "检测到 IPv6 地址：$ipv6，将使用 IPv6"
-        return
-    fi
-    log error "无法检测到公网 IPv4 或 IPv6 地址，请检查网络连通性"
+    local ipv4 attempt
+    for attempt in 1 2 3; do
+        ipv4=$(curl -4 -s --max-time 4 https://api.ipify.org || true)
+        if [[ -z $ipv4 ]]; then
+            ipv4=$(curl -4 -s --max-time 4 https://api.ip.sb/ip || true)
+        fi
+        if [[ -z $ipv4 ]]; then
+            ipv4=$(curl -4 -s --max-time 4 https://ifconfig.me || true)
+        fi
+        if [[ -n $ipv4 ]]; then
+            PUBLIC_IP="$ipv4"
+            log info "检测到 IPv4 地址：$ipv4"
+            return
+        fi
+        log warn "第 ${attempt} 次尝试未获取到公网 IPv4，稍后重试..."
+        sleep 2
+    done
+    log error "连续 3 次未检测到公网 IPv4 地址，请检查网络连通性后重试"
     exit 1
 }
 
@@ -353,11 +354,7 @@ create_config() {
     else
         server_name=$default_server
     fi
-    if [[ ${ACTIVE_IP_VERSION:-4} -eq 4 ]]; then
-        listen_address="0.0.0.0"
-    else
-        listen_address="::"
-    fi
+    listen_address="0.0.0.0"
     generate_reality_keys
     install -d -m 750 "$config_dir"
     cat >"${config_dir}/config.json" <<EOF
@@ -449,11 +446,7 @@ get_public_ip() {
         return
     fi
     local ip
-    if [[ ${ACTIVE_IP_VERSION:-4} -eq 4 ]]; then
-        ip=$(curl -4 -s --max-time 6 https://api.ip.sb/ip || curl -4 -s --max-time 6 https://ifconfig.me || true)
-    else
-        ip=$(curl -6 -s --max-time 6 https://api64.ipify.org || curl -6 -s --max-time 6 https://ifconfig.co || true)
-    fi
+    ip=$(curl -4 -s --max-time 6 https://api.ip.sb/ip || curl -4 -s --max-time 6 https://ifconfig.me || true)
     if [[ -z $ip ]]; then
         ip=$(hostname -I 2>/dev/null | awk '{print $1}')
     fi
@@ -492,8 +485,6 @@ ensure_system_user
 create_config
 create_service
 print_summary
-log info "若需自定义SNI，可在执行前设置环境变量 VISION_SERVER_NAME"
-log info "如果希望增加监控/防火墙等功能，可告知以便扩展"
 }
 
 main() {
