@@ -48,13 +48,34 @@ install_dependencies() {
     local packages=(curl tar gzip openssl coreutils util-linux)
     # apk与其他发行版命名差异
     if command -v apt-get >/dev/null 2>&1; then
-        packages+=(iproute2 lsb-release procps)
+        packages+=(iproute2 lsb-release procps iputils-ping)
     elif command -v yum >/dev/null 2>&1 || command -v dnf >/dev/null 2>&1; then
-        packages+=(iproute procps-ng)
+        packages+=(iproute procps-ng iputils)
     elif command -v apk >/dev/null 2>&1; then
-        packages+=(iproute2 shadow procps)
+        packages+=(iproute2 shadow procps iputils)
     fi
     eval "$PKG_INSTALL ${packages[*]}" >/dev/null
+}
+
+ensure_network_stack() {
+    local ipv4 ipv6
+    ipv4=$(curl -4 -s --max-time 4 https://api.ipify.org || true)
+    if [[ -n $ipv4 ]]; then
+        ACTIVE_IP_VERSION=4
+        PUBLIC_IP="$ipv4"
+        log info "检测到 IPv4 地址：$ipv4，将优先使用 IPv4"
+        return
+    fi
+    log warn "未检测到可用的公网 IPv4，尝试使用 IPv6"
+    ipv6=$(curl -6 -s --max-time 4 https://api64.ipify.org || true)
+    if [[ -n $ipv6 ]]; then
+        ACTIVE_IP_VERSION=6
+        PUBLIC_IP="$ipv6"
+        log info "检测到 IPv6 地址：$ipv6，将使用 IPv6"
+        return
+    fi
+    log error "无法检测到公网 IPv4 或 IPv6 地址，请检查网络连通性"
+    exit 1
 }
 
 compute_swap_size_mb() {
@@ -105,7 +126,25 @@ enable_bbr() {
         log info "BBR已启用"
         return
     fi
-    if ! grep -qw "bbr" /proc/sys/net/ipv4/tcp_available_congestion_control 2>/dev/null; then
+    local available
+    available=$(cat /proc/sys/net/ipv4/tcp_available_congestion_control 2>/dev/null || echo "")
+    if ! grep -qw "bbr" <<<"$available"; then
+        if command -v modprobe >/dev/null 2>&1; then
+            log warn "未检测到BBR模块，尝试加载 tcp_bbr..."
+            if modprobe tcp_bbr >/dev/null 2>&1; then
+                log info "tcp_bbr 模块加载成功"
+                available=$(cat /proc/sys/net/ipv4/tcp_available_congestion_control 2>/dev/null || echo "")
+                if [[ ! -f /etc/modules-load.d/bbr.conf ]]; then
+                    printf "tcp_bbr\n" >/etc/modules-load.d/bbr.conf
+                elif ! grep -qw "tcp_bbr" /etc/modules-load.d/bbr.conf 2>/dev/null; then
+                    printf "tcp_bbr\n" >>/etc/modules-load.d/bbr.conf
+                fi
+            else
+                log warn "tcp_bbr 模块加载失败"
+            fi
+        fi
+    fi
+    if ! grep -qw "bbr" <<<"$available"; then
         log warn "内核暂不支持BBR，跳过该步骤"
         return
     fi
@@ -177,6 +216,95 @@ ensure_system_user() {
     fi
 }
 
+remove_singbox() {
+    log info "开始卸载 sing-box..."
+    if command -v systemctl >/dev/null 2>&1; then
+        if systemctl list-unit-files | grep -q "^sing-box.service"; then
+            systemctl stop sing-box.service >/dev/null 2>&1 || true
+            systemctl disable sing-box.service >/dev/null 2>&1 || true
+        fi
+        rm -f /etc/systemd/system/sing-box.service
+        systemctl daemon-reload >/dev/null 2>&1 || true
+    else
+        log warn "未检测到systemd，跳过服务停止"
+    fi
+    rm -rf /etc/sing-box
+    rm -f /usr/local/bin/sing-box
+    rm -rf /usr/local/share/sing-box
+    rm -rf /var/lib/sing-box
+    if getent passwd sing-box >/dev/null 2>&1; then
+        if command -v pkill >/dev/null 2>&1; then
+            pkill -9 -u sing-box >/dev/null 2>&1 || true
+        fi
+        userdel -r sing-box >/dev/null 2>&1 || userdel sing-box >/dev/null 2>&1 || true
+    fi
+    log info "卸载 sing-box 完成"
+}
+
+debug_singbox() {
+    log info "开始收集调试信息"
+    if command -v sing-box >/dev/null 2>&1; then
+        log info "sing-box 版本：$(sing-box version 2>/dev/null | head -n 1)"
+    else
+        log warn "未检测到 sing-box 可执行文件"
+    fi
+    if [[ -f /etc/sing-box/config.json ]]; then
+        log info "配置文件存在：/etc/sing-box/config.json"
+        local port
+        port=$(grep -oE '"listen_port":\s*[0-9]+' /etc/sing-box/config.json 2>/dev/null | head -n 1 | grep -oE '[0-9]+')
+        if [[ -n $port ]]; then
+            log info "监听端口：${port}"
+        fi
+    else
+        log warn "未找到 sing-box 配置文件"
+    fi
+    if command -v systemctl >/dev/null 2>&1; then
+        if systemctl list-unit-files | grep -q "^sing-box.service"; then
+            local state
+            state=$(systemctl is-active sing-box.service 2>/dev/null || echo "unknown")
+            log info "systemd 服务状态：${state}"
+            if command -v journalctl >/dev/null 2>&1; then
+                log info "最近 20 行日志："
+                journalctl -u sing-box --no-pager -n 20 2>/dev/null || log warn "暂无日志"
+            else
+                log warn "无法获取日志：未找到 journalctl"
+            fi
+        else
+            log warn "systemd 中未注册 sing-box.service"
+        fi
+    else
+        log warn "未检测到systemd环境"
+    fi
+    if command -v ss >/dev/null 2>&1; then
+        log info "当前监听端口："
+        if ss -ltnp | grep -q sing-box; then
+            ss -ltnp | grep sing-box
+        else
+            log warn "未检测到 sing-box 监听端口"
+        fi
+    fi
+    log info "调试信息收集完成"
+}
+
+existing_vless_reality() {
+    local config="/etc/sing-box/config.json"
+    if [[ -f $config ]]; then
+        if grep -Eq '"type"[[:space:]]*:[[:space:]]*"vless"' "$config" && \
+           grep -Eq '"flow"[[:space:]]*:[[:space:]]*"xtls-rprx-vision"' "$config" && \
+           grep -Eq '"reality"' "$config"; then
+            return 0
+        fi
+    fi
+    return 1
+}
+
+reset_existing_deployment_if_needed() {
+    if existing_vless_reality; then
+        log warn "检测到现有 vless+vision+reality 部署，准备重新构建..."
+        remove_singbox
+    fi
+}
+
 generate_port() {
     local port attempt has_ss
     if command -v ss >/dev/null 2>&1; then
@@ -215,7 +343,7 @@ generate_reality_keys() {
 
 create_config() {
     local config_dir="/etc/sing-box"
-    local port uuid short_id server_name
+    local port uuid short_id server_name listen_address
     port=$(generate_port)
     uuid=$(cat /proc/sys/kernel/random/uuid)
     short_id=$(generate_short_id)
@@ -224,6 +352,11 @@ create_config() {
         server_name=$VISION_SERVER_NAME
     else
         server_name=$default_server
+    fi
+    if [[ ${ACTIVE_IP_VERSION:-4} -eq 4 ]]; then
+        listen_address="0.0.0.0"
+    else
+        listen_address="::"
     fi
     generate_reality_keys
     install -d -m 750 "$config_dir"
@@ -238,7 +371,7 @@ create_config() {
     {
       "type": "vless",
       "tag": "vless-reality",
-      "listen": "::",
+      "listen": "${listen_address}",
       "listen_port": ${port},
       "users": [
         {
@@ -311,10 +444,15 @@ EOF
 }
 
 get_public_ip() {
+    if [[ -n ${PUBLIC_IP:-} ]]; then
+        printf "%s" "$PUBLIC_IP"
+        return
+    fi
     local ip
-    ip=$(curl -s --max-time 6 https://api.ip.sb/ip || true)
-    if [[ -z $ip ]]; then
-        ip=$(curl -s --max-time 6 https://ifconfig.me || true)
+    if [[ ${ACTIVE_IP_VERSION:-4} -eq 4 ]]; then
+        ip=$(curl -4 -s --max-time 6 https://api.ip.sb/ip || curl -4 -s --max-time 6 https://ifconfig.me || true)
+    else
+        ip=$(curl -6 -s --max-time 6 https://api64.ipify.org || curl -6 -s --max-time 6 https://ifconfig.co || true)
     fi
     if [[ -z $ip ]]; then
         ip=$(hostname -I 2>/dev/null | awk '{print $1}')
@@ -323,10 +461,15 @@ get_public_ip() {
 }
 
 print_summary() {
-    local ip alias vless_url
+    local ip alias vless_url host_part
     ip=$(get_public_ip)
     alias="singbox-reality"
-    vless_url="vless://${CLIENT_UUID}@${ip}:${LISTEN_PORT}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${SERVER_NAME}&fp=chrome&type=tcp&headerType=none&alpn=h2&pbk=${PUBLIC_KEY}&sid=${SHORT_ID}&dest=${SERVER_NAME}%3A443#${alias}"
+    if [[ $ip == *:* ]]; then
+        host_part="[${ip}]"
+    else
+        host_part="$ip"
+    fi
+    vless_url="vless://${CLIENT_UUID}@${host_part}:${LISTEN_PORT}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${SERVER_NAME}&fp=chrome&type=tcp&headerType=none&alpn=h2&pbk=${PUBLIC_KEY}&sid=${SHORT_ID}&dest=${SERVER_NAME}%3A443#${alias}"
     printf "\n%b=== 部署完成 ===%b\n" "$GREEN" "$RESET"
     printf "%b监听端口：%b%s\n" "$GREEN" "$RESET" "$LISTEN_PORT"
     printf "%b客户端UUID：%b%s\n" "$GREEN" "$RESET" "$CLIENT_UUID"
@@ -337,19 +480,45 @@ print_summary() {
     printf "%bVLESS链接：%b\n%s\n" "$GREEN" "$RESET" "$vless_url"
 }
 
+install_workflow() {
+    reset_existing_deployment_if_needed
+    detect_package_manager
+install_dependencies
+ensure_network_stack
+enable_swap
+enable_bbr
+install_singbox
+ensure_system_user
+create_config
+create_service
+print_summary
+log info "若需自定义SNI，可在执行前设置环境变量 VISION_SERVER_NAME"
+log info "如果希望增加监控/防火墙等功能，可告知以便扩展"
+}
+
 main() {
     require_root
-    detect_package_manager
-    install_dependencies
-    enable_swap
-    enable_bbr
-    install_singbox
-    ensure_system_user
-    create_config
-    create_service
-    print_summary
-    log info "若需自定义SNI，可在执行前设置环境变量 VISION_SERVER_NAME"
-    log info "如果希望增加监控/防火墙等功能，可告知以便扩展"
+    local action=${1:-install}
+    case "$action" in
+        install|--install)
+            install_workflow
+            ;;
+        uninstall|remove|--remove|--uninstall)
+            remove_singbox
+            ;;
+        reinstall|--reinstall)
+            remove_singbox
+            install_workflow
+            ;;
+        debug|--debug)
+            debug_singbox
+            ;;
+        *)
+            log error "未知操作：$action"
+            log info "支持命令：install（默认）、uninstall、reinstall、debug"
+            exit 1
+            ;;
+    esac
 }
 
 main "$@"
