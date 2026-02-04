@@ -138,7 +138,8 @@ check_login_shell() {
             ;;
         *)
             log info "正在使用完整登录 shell 重新执行脚本..."
-            exec su - root -c "bash <(curl -fsSL https://raw.githubusercontent.com/charleslkx/quick-script/master/main.sh) $*"
+            # 重新执行 bootstrap.sh，让 channel 参数可以被正确解析
+            exec su - root -c "bash <(curl -fsSL https://raw.githubusercontent.com/charleslkx/one-script/main/bootstrap.sh) --channel=main $*"
             ;;
     esac
 }
