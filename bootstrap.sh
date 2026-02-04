@@ -80,7 +80,8 @@ run_remote_script() {
     if command -v curl >/dev/null 2>&1; then
         log "info" "使用 curl 下载并执行远程脚本..."
         # shellcheck disable=SC1090
-        if bash <(curl -fsSL "${script_url}" 2>/dev/null) "${REMAINING_ARGS[@]}"; then
+        if ONE_SCRIPT_CHANNEL="${CHANNEL}" ONE_SCRIPT_BASE_URL="${BASE_URL}" \
+            bash <(curl -fsSL "${script_url}" 2>/dev/null) "${REMAINING_ARGS[@]}"; then
             return 0
         else
             log "error" "远程脚本执行失败"
@@ -89,7 +90,8 @@ run_remote_script() {
     elif command -v wget >/dev/null 2>&1; then
         log "info" "使用 wget 下载并执行远程脚本..."
         # shellcheck disable=SC1090
-        if bash <(wget -qO- "${script_url}" 2>/dev/null) "${REMAINING_ARGS[@]}"; then
+        if ONE_SCRIPT_CHANNEL="${CHANNEL}" ONE_SCRIPT_BASE_URL="${BASE_URL}" \
+            bash <(wget -qO- "${script_url}" 2>/dev/null) "${REMAINING_ARGS[@]}"; then
             return 0
         else
             log "error" "远程脚本执行失败"

@@ -6,6 +6,9 @@ YELLOW="\033[33m"
 RED="\033[31m"
 RESET="\033[0m"
 
+CHANNEL="main"
+DISTRO="unknown"
+
 log() {
     local level=$1
     shift
@@ -16,8 +19,46 @@ log() {
     esac
 }
 
+normalize_channel() {
+    local channel
+    channel=$(echo "${1:-}" | tr '[:upper:]' '[:lower:]')
+    case "$channel" in
+        dev|main)
+            echo "$channel"
+            ;;
+        *)
+            echo "main"
+            ;;
+    esac
+}
+
+init_channel() {
+    CHANNEL=$(normalize_channel "${ONE_SCRIPT_CHANNEL:-}")
+    log info "当前渠道：${CHANNEL}"
+}
+
 cmd_exists() {
     command -v "$1" >/dev/null 2>&1
+}
+
+is_interactive() {
+    [[ -t 0 ]] || [[ -c /dev/tty ]]
+}
+
+read_prompt() {
+    local prompt="$1"
+    local default="${2:-}"
+    local answer=""
+
+    if [[ -t 0 ]]; then
+        read -r -p "$prompt" answer
+    elif [[ -c /dev/tty ]]; then
+        read -r -p "$prompt" answer </dev/tty || answer="$default"
+    else
+        answer="$default"
+    fi
+
+    echo "${answer:-$default}"
 }
 
 first_ipv4() {
@@ -142,6 +183,382 @@ check_login_shell() {
             exec su - root -c "bash <(curl -fsSL https://raw.githubusercontent.com/charleslkx/one-script/main/bootstrap.sh) --channel=main $*"
             ;;
     esac
+}
+
+detect_release() {
+    DISTRO="unknown"
+    if [[ -f /etc/os-release ]]; then
+        # shellcheck disable=SC1091
+        . /etc/os-release
+        DISTRO="${ID:-unknown}"
+        if [[ "$DISTRO" != "debian" && "$DISTRO" != "ubuntu" ]]; then
+            if [[ "${ID_LIKE:-}" == *debian* ]]; then
+                DISTRO="debian"
+            fi
+        fi
+    fi
+}
+
+is_debian_family() {
+    [[ "$DISTRO" == "debian" || "$DISTRO" == "ubuntu" ]]
+}
+
+get_memory_size_mb() {
+    local mem_kb
+    mem_kb=$(awk '/MemTotal/ {print $2}' /proc/meminfo 2>/dev/null || echo 0)
+    echo $((mem_kb / 1024))
+}
+
+get_disk_available_mb() {
+    local available_kb
+    available_kb=$(df -k / | awk 'NR==2 {print $4}')
+    echo $((available_kb / 1024))
+}
+
+systemd_available() {
+    [[ -d /run/systemd/system ]] && cmd_exists systemctl
+}
+
+set_sysctl_value() {
+    local key="$1"
+    local value="$2"
+    if [[ -f /etc/sysctl.conf ]] && grep -q "^${key}=" /etc/sysctl.conf 2>/dev/null; then
+        sed -i "s/^${key}=.*/${key}=${value}/" /etc/sysctl.conf
+    else
+        echo "${key}=${value}" >> /etc/sysctl.conf
+    fi
+    sysctl "${key}=${value}" >/dev/null 2>&1 || true
+}
+
+apply_memory_tuning() {
+    local swappiness="$1"
+    local vfs_cache_pressure="$2"
+    set_sysctl_value "vm.swappiness" "${swappiness}"
+    set_sysctl_value "vm.vfs_cache_pressure" "${vfs_cache_pressure}"
+}
+
+ensure_memory_dependencies() {
+    if ! is_debian_family; then
+        return 0
+    fi
+
+    local packages=()
+    if ! cmd_exists modprobe; then
+        packages+=("kmod")
+    fi
+    if ! cmd_exists mkswap || ! cmd_exists swapon; then
+        packages+=("util-linux")
+    fi
+    if ! cmd_exists sysctl; then
+        packages+=("procps")
+    fi
+
+    if [[ ${#packages[@]} -gt 0 ]]; then
+        log info "正在安装内存相关依赖: ${packages[*]}"
+        eval "$PKG_UPDATE" >/dev/null 2>&1 || true
+        eval "$PKG_INSTALL ${packages[*]}" >/dev/null 2>&1 || true
+    fi
+}
+
+is_zram_active() {
+    [[ -f /proc/swaps ]] && grep -q "/dev/zram0" /proc/swaps
+}
+
+is_disk_swap_active() {
+    if cmd_exists swapon; then
+        swapon --show --noheadings 2>/dev/null | awk '{print $1}' | grep -qv "/dev/zram0"
+        return $?
+    fi
+    return 1
+}
+
+list_swap_devices() {
+    if cmd_exists swapon; then
+        swapon --show --noheadings 2>/dev/null | awk '{print $1}'
+    fi
+}
+
+ZRAM_SERVICE_FILE="/etc/systemd/system/quick-script-zram.service"
+ZRAM_SCRIPT_PATH="/usr/local/bin/quick-script-zram"
+ZRAM_ENV_FILE="/etc/quick-script/zram.env"
+
+write_zram_runtime_files() {
+    local zram_mb="$1"
+    local zram_algo="$2"
+    local zram_priority="$3"
+
+    mkdir -p /etc/quick-script
+    cat >"${ZRAM_ENV_FILE}" <<EOF
+ZRAM_SIZE_MB=${zram_mb}
+ZRAM_ALGO=${zram_algo}
+ZRAM_PRIORITY=${zram_priority}
+EOF
+
+    cat >"${ZRAM_SCRIPT_PATH}" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+ZRAM_ENV="/etc/quick-script/zram.env"
+if [[ -f "${ZRAM_ENV}" ]]; then
+    # shellcheck disable=SC1090
+    source "${ZRAM_ENV}"
+fi
+
+ZRAM_SIZE_MB="${ZRAM_SIZE_MB:-512}"
+ZRAM_ALGO="${ZRAM_ALGO:-lz4}"
+ZRAM_PRIORITY="${ZRAM_PRIORITY:-100}"
+
+start_zram() {
+    modprobe zram num_devices=1
+
+    swapoff /dev/zram0 2>/dev/null || true
+
+    if [[ -e /sys/block/zram0/reset ]]; then
+        echo 1 > /sys/block/zram0/reset || true
+    fi
+
+    if [[ -n "${ZRAM_ALGO}" && -w /sys/block/zram0/comp_algorithm ]]; then
+        echo "${ZRAM_ALGO}" > /sys/block/zram0/comp_algorithm || true
+    fi
+
+    echo "$((ZRAM_SIZE_MB * 1024 * 1024))" > /sys/block/zram0/disksize
+
+    mkswap /dev/zram0 >/dev/null
+    swapon -p "${ZRAM_PRIORITY}" /dev/zram0
+}
+
+stop_zram() {
+    swapoff /dev/zram0 2>/dev/null || true
+    if [[ -e /sys/block/zram0/reset ]]; then
+        echo 1 > /sys/block/zram0/reset || true
+    fi
+}
+
+case "${1:-start}" in
+    start)
+        start_zram
+        ;;
+    stop)
+        stop_zram
+        ;;
+    *)
+        echo "Usage: $0 {start|stop}"
+        exit 1
+        ;;
+esac
+EOF
+
+    chmod +x "${ZRAM_SCRIPT_PATH}"
+}
+
+enable_zram_service() {
+    cat >"${ZRAM_SERVICE_FILE}" <<EOF
+[Unit]
+Description=Quick-Script ZRAM Swap
+DefaultDependencies=no
+After=local-fs.target
+Before=swap.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=${ZRAM_SCRIPT_PATH} start
+ExecStop=${ZRAM_SCRIPT_PATH} stop
+
+[Install]
+WantedBy=swap.target
+EOF
+
+    if systemd_available; then
+        systemctl daemon-reload
+        systemctl enable --now "$(basename "${ZRAM_SERVICE_FILE}")" >/dev/null 2>&1 || true
+    fi
+}
+
+configure_zram_swap() {
+    local zram_mb="$1"
+    local zram_algo="${2:-lz4}"
+    local zram_priority="${3:-100}"
+
+    ensure_memory_dependencies
+
+    if ! modprobe zram num_devices=1 >/dev/null 2>&1; then
+        log warn "加载 zram 模块失败，跳过 zram 配置"
+        return 1
+    fi
+
+    if systemd_available; then
+        if systemctl list-unit-files 2>/dev/null | grep -q "^zramswap.service"; then
+            systemctl disable --now zramswap.service >/dev/null 2>&1 || true
+            log warn "检测到 zramswap 服务，已禁用以避免冲突"
+        fi
+        systemctl stop "$(basename "${ZRAM_SERVICE_FILE}")" >/dev/null 2>&1 || true
+    else
+        swapoff /dev/zram0 2>/dev/null || true
+    fi
+
+    write_zram_runtime_files "${zram_mb}" "${zram_algo}" "${zram_priority}"
+    enable_zram_service
+    apply_memory_tuning "100" "50"
+
+    if systemd_available; then
+        if systemctl is-active --quiet "$(basename "${ZRAM_SERVICE_FILE}")"; then
+            log info "ZRAM 已启用并设置开机自启"
+        else
+            log warn "ZRAM 服务启动失败，请检查 systemd 日志"
+        fi
+    else
+        "${ZRAM_SCRIPT_PATH}" start >/dev/null 2>&1 || true
+        log warn "未检测到 systemd，ZRAM 仅在当前会话生效"
+    fi
+}
+
+recommend_hybrid_sizes() {
+    local memory_mb="$1"
+    local zram_mb=$((memory_mb / 2))
+
+    if [[ $zram_mb -lt 256 ]]; then
+        zram_mb=256
+    elif [[ $zram_mb -gt 1024 ]]; then
+        zram_mb=1024
+    fi
+
+    local swap_mb
+    if [[ $memory_mb -le 512 ]]; then
+        swap_mb=1024
+    elif [[ $memory_mb -le 1024 ]]; then
+        swap_mb=2048
+    elif [[ $memory_mb -le 2048 ]]; then
+        swap_mb=2048
+    else
+        swap_mb=1024
+    fi
+
+    echo "${zram_mb} ${swap_mb}"
+}
+
+create_swap_file() {
+    local swap_size="$1"
+    log info "正在创建 ${swap_size}MB 的 swap 文件..."
+
+    local available_space_mb
+    available_space_mb=$(get_disk_available_mb)
+    local required_space_mb=$((swap_size + 200))
+
+    if [[ $available_space_mb -lt $required_space_mb ]]; then
+        log warn "磁盘空间不足，需要 ${required_space_mb}MB，可用 ${available_space_mb}MB"
+        return 1
+    fi
+
+    if [[ -f /swapfile ]]; then
+        log warn "检测到已存在的 /swapfile，正在移除..."
+        swapoff /swapfile 2>/dev/null || true
+        rm -f /swapfile
+    fi
+
+    if dd if=/dev/zero of=/swapfile bs=1M count="${swap_size}" 2>/dev/null; then
+        chmod 600 /swapfile
+        if mkswap /swapfile >/dev/null 2>&1; then
+            if swapon /swapfile >/dev/null 2>&1; then
+                if ! grep -q "/swapfile" /etc/fstab 2>/dev/null; then
+                    echo "/swapfile none swap defaults 0 0" >> /etc/fstab
+                fi
+
+                local swappiness=10
+                local vfs_cache_pressure=50
+                if is_zram_active; then
+                    swappiness=100
+                fi
+                apply_memory_tuning "${swappiness}" "${vfs_cache_pressure}"
+
+                log info "swap 创建并启用成功"
+                return 0
+            fi
+        fi
+    fi
+
+    log warn "swap 创建失败"
+    rm -f /swapfile >/dev/null 2>&1 || true
+    return 1
+}
+
+setup_hybrid_memory() {
+    if ! is_debian_family; then
+        log warn "当前系统非 Debian/Ubuntu，跳过混合内存方案"
+        return 0
+    fi
+
+    if is_zram_active && is_disk_swap_active; then
+        log info "检测到 ZRAM 与 Swap 已配置，跳过"
+        return 0
+    fi
+
+    if is_interactive; then
+        local choice
+        choice=$(read_prompt "是否配置混合内存方案 (zram + swap)? [Y/n]: " "Y")
+        if [[ ! "$choice" =~ ^[Yy]$ ]]; then
+            log info "已跳过混合内存方案"
+            return 0
+        fi
+    fi
+
+    ensure_memory_dependencies
+
+    local memory_mb available_space_mb max_swap_mb
+    memory_mb=$(get_memory_size_mb)
+    available_space_mb=$(get_disk_available_mb)
+    max_swap_mb=$((available_space_mb - 1024))
+    if [[ $max_swap_mb -lt 0 ]]; then
+        max_swap_mb=0
+    fi
+
+    log info "当前内存：${memory_mb}MB"
+    log info "根分区可用空间：${available_space_mb}MB"
+
+    local rec_zram rec_swap
+    read -r rec_zram rec_swap < <(recommend_hybrid_sizes "${memory_mb}")
+
+    if [[ $max_swap_mb -lt 128 ]]; then
+        rec_swap=0
+        log warn "磁盘空间不足，将仅配置 zram"
+    elif [[ $rec_swap -gt $max_swap_mb ]]; then
+        rec_swap=$max_swap_mb
+        log warn "根据磁盘空间调整推荐 swap 为 ${rec_swap}MB"
+    fi
+
+    local existing_swap
+    existing_swap=$(list_swap_devices | tr '\n' ' ')
+    if [[ -n "${existing_swap}" ]]; then
+        log warn "检测到已有 swap 设备：${existing_swap}"
+    fi
+
+    log info "推荐方案：zram ${rec_zram}MB + swap ${rec_swap}MB"
+
+    if [[ $rec_zram -gt 0 ]]; then
+        if ! configure_zram_swap "${rec_zram}" "lz4" "100"; then
+            log warn "ZRAM 配置失败，继续后续流程"
+        fi
+    fi
+
+    if [[ $rec_swap -gt 0 ]]; then
+        if [[ -n "${existing_swap}" ]]; then
+            if is_interactive; then
+                local replace_choice
+                replace_choice=$(read_prompt "检测到已有 swap，是否仍创建/替换 /swapfile? [y/N]: " "N")
+                if [[ "$replace_choice" =~ ^[Yy]$ ]]; then
+                    create_swap_file "${rec_swap}" || true
+                else
+                    log info "保留现有 swap，跳过 /swapfile 创建"
+                fi
+            else
+                log info "检测到已有 swap，跳过 /swapfile 创建"
+            fi
+        else
+            create_swap_file "${rec_swap}" || true
+        fi
+    else
+        log info "未创建新的 swap 文件"
+    fi
 }
 
 detect_package_manager() {
@@ -635,6 +1052,8 @@ install_workflow() {
     detect_package_manager
     setup_locale
     install_dependencies
+    detect_release
+    setup_hybrid_memory
     ensure_network_stack
     enable_bbr
     install_singbox
@@ -648,6 +1067,7 @@ install_workflow() {
 main() {
     require_root
     check_login_shell
+    init_channel
     local action=${1:-install}
     case "$action" in
         install|--install)
