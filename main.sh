@@ -278,6 +278,53 @@ list_swap_devices() {
     fi
 }
 
+get_zram_active_algo() {
+    local algo_file="/sys/block/zram0/comp_algorithm"
+    if [[ -r "$algo_file" ]]; then
+        awk '{for (i=1;i<=NF;i++) if ($i ~ /^\[.*\]$/) {gsub(/[\[\]]/, "", $i); print $i; exit}}' "$algo_file"
+    fi
+}
+
+get_zram_size_mb() {
+    local size_bytes_file="/sys/block/zram0/disksize"
+    if [[ -r "$size_bytes_file" ]]; then
+        local size_bytes
+        size_bytes=$(cat "$size_bytes_file" 2>/dev/null || echo 0)
+        echo $((size_bytes / 1024 / 1024))
+    fi
+}
+
+print_current_swap_status() {
+    log info "检测到现有 zram 与 swap，输出当前配置："
+
+    if is_zram_active; then
+        local zram_mb zram_algo zram_prio
+        zram_mb=$(get_zram_size_mb)
+        zram_algo=$(get_zram_active_algo)
+        if cmd_exists swapon; then
+            zram_prio=$(swapon --show --noheadings --output=NAME,PRIO 2>/dev/null | awk '$1=="/dev/zram0"{print $2; exit}')
+        fi
+        [[ -n "${zram_mb}" ]] && log info "ZRAM 大小：${zram_mb}MB"
+        [[ -n "${zram_algo}" ]] && log info "ZRAM 压缩算法：${zram_algo}"
+        [[ -n "${zram_prio:-}" ]] && log info "ZRAM 优先级：${zram_prio}"
+    else
+        log info "ZRAM：未启用"
+    fi
+
+    if cmd_exists swapon; then
+        local swap_list
+        swap_list=$(swapon --show --noheadings --output=NAME,TYPE,SIZE,USED,PRIO 2>/dev/null | sed '/^$/d')
+        if [[ -n "$swap_list" ]]; then
+            log info "Swap 列表："
+            printf "%s\n" "$swap_list"
+        else
+            log info "Swap：未启用"
+        fi
+    else
+        log info "Swap：无法检测（缺少 swapon）"
+    fi
+}
+
 ZRAM_SERVICE_FILE="/etc/systemd/system/quick-script-zram.service"
 ZRAM_SCRIPT_PATH="/usr/local/bin/quick-script-zram"
 ZRAM_ENV_FILE="/etc/quick-script/zram.env"
@@ -489,6 +536,7 @@ setup_hybrid_memory() {
     fi
 
     if is_zram_active && is_disk_swap_active; then
+        print_current_swap_status
         log info "检测到 ZRAM 与 Swap 已配置，跳过"
         return 0
     fi
