@@ -535,9 +535,9 @@ setup_hybrid_memory() {
         return 0
     fi
 
-    if is_zram_active && is_disk_swap_active; then
+    if is_zram_active || is_disk_swap_active; then
         print_current_swap_status
-        log info "检测到 ZRAM 与 Swap 已配置，跳过"
+        log info "检测到 ZRAM 或 Swap 已配置，跳过"
         return 0
     fi
 
