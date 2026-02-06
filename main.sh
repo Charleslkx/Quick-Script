@@ -261,21 +261,15 @@ ensure_memory_dependencies() {
 }
 
 is_zram_active() {
-    [[ -f /proc/swaps ]] && grep -q "/dev/zram0" /proc/swaps
+    grep -q "/dev/zram0" /proc/swaps 2>/dev/null
 }
 
 is_disk_swap_active() {
-    if cmd_exists swapon; then
-        swapon --show --noheadings 2>/dev/null | awk '{print $1}' | grep -qv "/dev/zram0"
-        return $?
-    fi
-    return 1
+    awk 'NR>1 && $1 != "/dev/zram0" {exit 0} END {exit 1}' /proc/swaps 2>/dev/null
 }
 
 list_swap_devices() {
-    if cmd_exists swapon; then
-        swapon --show --noheadings 2>/dev/null | awk '{print $1}'
-    fi
+    awk 'NR>1 {print $1}' /proc/swaps 2>/dev/null
 }
 
 get_zram_active_algo() {
@@ -301,27 +295,26 @@ print_current_swap_status() {
         local zram_mb zram_algo zram_prio
         zram_mb=$(get_zram_size_mb)
         zram_algo=$(get_zram_active_algo)
-        if cmd_exists swapon; then
-            zram_prio=$(swapon --show --noheadings --output=NAME,PRIO 2>/dev/null | awk '$1=="/dev/zram0"{print $2; exit}')
-        fi
+        zram_prio=$(awk '$1=="/dev/zram0"{print $5}' /proc/swaps 2>/dev/null || echo "")
+        
         [[ -n "${zram_mb}" ]] && log info "ZRAM 大小：${zram_mb}MB"
         [[ -n "${zram_algo}" ]] && log info "ZRAM 压缩算法：${zram_algo}"
-        [[ -n "${zram_prio:-}" ]] && log info "ZRAM 优先级：${zram_prio}"
+        [[ -n "${zram_prio}" ]] && log info "ZRAM 优先级：${zram_prio}"
     else
         log info "ZRAM：未启用"
     fi
 
-    if cmd_exists swapon; then
+    if [[ -f /proc/swaps ]]; then
         local swap_list
-        swap_list=$(swapon --show --noheadings --output=NAME,TYPE,SIZE,USED,PRIO 2>/dev/null | sed '/^$/d')
+        swap_list=$(awk 'NR>1 {printf "%-20s %-10s %-10s %-10s %-10s\n", $1, $2, $3, $4, $5}' /proc/swaps)
         if [[ -n "$swap_list" ]]; then
-            log info "Swap 列表："
+            log info "Swap 列表 (文件名 类型 大小 已用 优先级)："
             printf "%s\n" "$swap_list"
         else
             log info "Swap：未启用"
         fi
     else
-        log info "Swap：无法检测（缺少 swapon）"
+        log info "Swap：无法检测 (/proc/swaps 不存在)"
     fi
 }
 
