@@ -111,7 +111,7 @@ safe_curl() {
                 return 0
             fi
         fi
-        ((retry_count++))
+        retry_count=$((retry_count + 1))
         [[ $retry_count -lt $max_retries ]] && sleep 3
     done
     return 1
@@ -150,7 +150,7 @@ first_ipv4() {
                 return 0
             fi
         done
-        ((retry_count++))
+        retry_count=$((retry_count + 1))
         [[ $retry_count -lt $max_retries ]] && sleep 2
     done
     return 1
@@ -518,7 +518,7 @@ configure_zram_swap() {
         if modprobe zram num_devices=1 >/dev/null 2>&1; then
             break
         fi
-        ((retry_count++))
+        retry_count=$((retry_count + 1))
         log warn "zram 模块加载失败，重试 ${retry_count}/${max_retries}..."
         sleep 1
     done
@@ -548,7 +548,7 @@ configure_zram_swap() {
             break
         fi
         sleep 1
-        ((zram_wait++))
+        zram_wait=$((zram_wait + 1))
     done
 
     if systemd_available; then
@@ -946,7 +946,7 @@ fetch_latest_singbox() {
         if [[ -n $tag ]]; then
             break
         fi
-        ((retry_count++))
+        retry_count=$((retry_count + 1))
         log warn "获取 sing-box 版本信息失败，重试 ${retry_count}/${max_retries}..."
         sleep 3
     done
@@ -993,7 +993,7 @@ install_singbox() {
                 break
             fi
         fi
-        ((retry_count++))
+        retry_count=$((retry_count + 1))
         log warn "下载 sing-box 失败，重试 ${retry_count}/${max_retries}..."
         sleep 5
     done
@@ -1413,55 +1413,55 @@ install_workflow() {
 
     log info "开始安装流程..."
 
-    ((step++))
+    step=$((step + 1))
     log info "[$step/$total_steps] 检查现有安装..."
     check_existing_installation || { log error "检查现有安装失败"; exit 1; }
 
-    ((step++))
+    step=$((step + 1))
     log info "[$step/$total_steps] 检测包管理器..."
     detect_package_manager || { log error "检测包管理器失败"; exit 1; }
 
-    ((step++))
+    step=$((step + 1))
     log info "[$step/$total_steps] 设置 locale..."
     setup_locale || log warn "设置 locale 部分失败，继续..."
 
-    ((step++))
+    step=$((step + 1))
     log info "[$step/$total_steps] 安装依赖..."
     install_dependencies || { log error "安装依赖失败"; exit 1; }
 
-    ((step++))
+    step=$((step + 1))
     log info "[$step/$total_steps] 检测系统版本..."
     detect_release || log warn "检测系统版本失败，继续..."
 
-    ((step++))
+    step=$((step + 1))
     log info "[$step/$total_steps] 设置混合内存..."
     setup_hybrid_memory || log warn "设置混合内存部分失败，继续..."
 
-    ((step++))
+    step=$((step + 1))
     log info "[$step/$total_steps] 检查网络..."
     ensure_network_stack || { log error "网络检查失败"; exit 1; }
 
-    ((step++))
+    step=$((step + 1))
     log info "[$step/$total_steps] 启用 BBR..."
     enable_bbr || log warn "启用 BBR 失败，继续..."
 
-    ((step++))
+    step=$((step + 1))
     log info "[$step/$total_steps] 安装 sing-box..."
     install_singbox || { log error "安装 sing-box 失败"; exit 1; }
 
-    ((step++))
+    step=$((step + 1))
     log info "[$step/$total_steps] 创建系统用户..."
     ensure_system_user || { log error "创建系统用户失败"; exit 1; }
 
-    ((step++))
+    step=$((step + 1))
     log info "[$step/$total_steps] 创建配置文件..."
     create_config || { log error "创建配置文件失败"; exit 1; }
 
-    ((step++))
+    step=$((step + 1))
     log info "[$step/$total_steps] 创建系统服务..."
     create_service || { log error "创建系统服务失败"; exit 1; }
 
-    ((step++))
+    step=$((step + 1))
     log info "[$step/$total_steps] 设置定时任务..."
     setup_cron_restart || log warn "设置定时任务失败，继续..."
 
