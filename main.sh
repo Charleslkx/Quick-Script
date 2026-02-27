@@ -7,6 +7,8 @@ shopt -s inherit_errexit 2>/dev/null || true
 GREEN="\033[32m"
 YELLOW="\033[33m"
 RED="\033[31m"
+BLUE="\033[34m"
+CYAN="\033[36m"
 RESET="\033[0m"
 
 CHANNEL="main"
@@ -36,12 +38,21 @@ trap 'log error "接收到终止信号，正在清理..."; exit 143' TERM
 log() {
     local level=$1
     shift
-    local timestamp tag color
+    local message timestamp tag color
+    message="$*"
     timestamp=$(date '+%Y-%m-%d %H:%M:%S')
     case "$level" in
         info)
             tag="INFO"
-            color="$GREEN"
+            if [[ "$message" =~ ^\[[0-9]+/[0-9]+\] ]]; then
+                color="$CYAN"
+            elif [[ "$message" == *"成功"* || "$message" == *"完成"* || "$message" == *"正常"* || "$message" == *"已存在"* || "$message" == *"已设置"* || "$message" == *"已启用"* || "$message" == *"已启动"* || "$message" == *"检测到 IPv4"* ]]; then
+                color="$GREEN"
+            elif [[ "$message" == *"开始"* || "$message" == *"检查"* || "$message" == *"安装"* || "$message" == *"检测"* || "$message" == *"设置"* || "$message" == *"创建"* || "$message" == *"下载"* || "$message" == *"配置"* || "$message" == *"启用"* || "$message" == *"重试"* || "$message" == *"正在"* ]]; then
+                color="$CYAN"
+            else
+                color="$BLUE"
+            fi
             ;;
         warn)
             tag="WARN"
@@ -56,7 +67,27 @@ log() {
             color="$RESET"
             ;;
     esac
-    printf "%b[%s]%b %s %s\n" "$color" "$tag" "$RESET" "$timestamp" "$*" >&2
+    printf "%b[%s]%b %s %s\n" "$color" "$tag" "$RESET" "$timestamp" "$message" >&2
+}
+
+print_box() {
+    local title="$1"
+    shift
+    local lines=("$@")
+    local width=58
+    local border
+    border=$(printf '%*s' "$width" '' | tr ' ' '-')
+
+    printf "%b+%s+%b\n" "$CYAN" "$border" "$RESET" >&2
+    printf "%b|%b %-*s %b|%b\n" "$CYAN" "$RESET" $((width - 2)) "$title" "$CYAN" "$RESET" >&2
+    printf "%b+%s+%b\n" "$CYAN" "$border" "$RESET" >&2
+
+    local line
+    for line in "${lines[@]}"; do
+        printf "%b|%b %-*s %b|%b\n" "$CYAN" "$RESET" $((width - 2)) "$line" "$CYAN" "$RESET" >&2
+    done
+
+    printf "%b+%s+%b\n" "$CYAN" "$border" "$RESET" >&2
 }
 
 normalize_channel() {
@@ -1136,16 +1167,15 @@ create_config() {
     elif is_interactive; then
         local i choice custom_sni
         local timeout_sec=30
-
-        log info "请选择 SNI (Server Name Indication)"
-        log info "预设选项:"
+        local menu_lines=()
         for i in "${!prefill_servers[@]}"; do
             local marker=""
             [[ "${prefill_servers[$i]}" == "$default_server" ]] && marker=" (默认)"
-            log info "$((i + 1))) ${prefill_servers[$i]}${marker}"
+            menu_lines+=("$((i + 1))) ${prefill_servers[$i]}${marker}")
         done
-        log info "c) 自定义 SNI"
-        printf "请输入选项 (1-%d/c)，%d秒后默认选择 '%s': " "${#prefill_servers[@]}" "$timeout_sec" "$default_server"
+        menu_lines+=("c) 自定义 SNI")
+        print_box "SNI (Server Name Indication)" "${menu_lines[@]}"
+        printf "%b选择 [1-%d/c]，%d秒后默认 '%s': %b" "$YELLOW" "${#prefill_servers[@]}" "$timeout_sec" "$default_server" "$RESET" >&2
 
         if read -r -t "$timeout_sec" choice; then
             case "$choice" in
