@@ -74,33 +74,63 @@ parse_channel_args() {
 
 run_remote_script() {
     local script_url="${BASE_URL}/main.sh"
+    local temp_script
+    local download_success=0
 
     log "info" "远程脚本 URL: ${script_url}"
 
+    temp_script=$(mktemp -t quick-script.XXXXXX)
+    if [[ -z "$temp_script" ]] || [[ ! -f "$temp_script" ]]; then
+        log "error" "创建临时文件失败"
+        return 1
+    fi
+
+    log "info" "下载远程脚本到临时文件..."
+
     if command -v curl >/dev/null 2>&1; then
-        log "info" "使用 curl 下载并执行远程脚本..."
-        # shellcheck disable=SC1090
-        if ONE_SCRIPT_CHANNEL="${CHANNEL}" ONE_SCRIPT_BASE_URL="${BASE_URL}" \
-            bash <(curl -fsSL "${script_url}" 2>/dev/null) "${REMAINING_ARGS[@]}"; then
-            return 0
-        else
-            log "error" "远程脚本执行失败"
-            return 1
+        if curl -fsSL --max-time 60 "${script_url}" -o "${temp_script}" 2>/dev/null; then
+            if [[ -s "${temp_script}" ]]; then
+                download_success=1
+            fi
         fi
     elif command -v wget >/dev/null 2>&1; then
-        log "info" "使用 wget 下载并执行远程脚本..."
-        # shellcheck disable=SC1090
-        if ONE_SCRIPT_CHANNEL="${CHANNEL}" ONE_SCRIPT_BASE_URL="${BASE_URL}" \
-            bash <(wget -qO- "${script_url}" 2>/dev/null) "${REMAINING_ARGS[@]}"; then
-            return 0
-        else
-            log "error" "远程脚本执行失败"
-            return 1
+        if wget -qO "${temp_script}" "${script_url}" 2>/dev/null; then
+            if [[ -s "${temp_script}" ]]; then
+                download_success=1
+            fi
         fi
     else
         log "error" "未找到 wget 或 curl 工具，无法下载远程脚本"
+        rm -f "${temp_script}" 2>/dev/null || true
         return 1
     fi
+
+    if [[ ${download_success} -eq 0 ]]; then
+        log "error" "下载远程脚本失败，请检查网络连接或 URL 是否正确"
+        rm -f "${temp_script}" 2>/dev/null || true
+        return 1
+    fi
+
+    if ! bash -n "${temp_script}" 2>/dev/null; then
+        log "error" "下载的脚本存在语法错误，可能网络传输异常"
+        rm -f "${temp_script}" 2>/dev/null || true
+        return 1
+    fi
+
+    log "info" "脚本下载成功，开始执行..."
+
+    local script_exit_code=0
+    ONE_SCRIPT_CHANNEL="${CHANNEL}" ONE_SCRIPT_BASE_URL="${BASE_URL}" \
+        bash "${temp_script}" "${REMAINING_ARGS[@]}" || script_exit_code=$?
+
+    rm -f "${temp_script}" 2>/dev/null || true
+
+    if [[ ${script_exit_code} -ne 0 ]]; then
+        log "error" "远程脚本执行失败 (退出码: ${script_exit_code})"
+        return 1
+    fi
+
+    return 0
 }
 
 main() {
