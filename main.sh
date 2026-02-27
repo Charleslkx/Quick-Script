@@ -1141,12 +1141,31 @@ reset_existing_deployment_if_needed() {
 }
 
 generate_port() {
-    local port attempt has_ss
+    local port attempt has_ss preferred requested_port
+
+    requested_port="${VISION_PORT:-}"
+    if [[ -n "$requested_port" ]]; then
+        if [[ "$requested_port" =~ ^[0-9]+$ ]] && [[ "$requested_port" -ge 1 ]] && [[ "$requested_port" -le 65535 ]]; then
+            printf "%s" "$requested_port"
+            return
+        fi
+        log warn "VISION_PORT=${requested_port} 非法，改用自动端口"
+    fi
+
     if command -v ss >/dev/null 2>&1; then
         has_ss=1
     else
         has_ss=0
     fi
+
+    # 优先尝试常见放行端口，降低云服务商安全组阻断概率
+    for preferred in 443 8443 2053; do
+        if [[ $has_ss -eq 0 ]] || ! ss -ltn 2>/dev/null | awk '{print $4}' | tr -d '[]' | awk -F':' '{print $NF}' | grep -qw "$preferred"; then
+            printf "%s" "$preferred"
+            return
+        fi
+    done
+
     for attempt in $(seq 1 30); do
         port=$(shuf -i 20000-60000 -n 1)
         if [[ $has_ss -eq 0 ]] || ! ss -ltn 2>/dev/null | awk '{print $4}' | tr -d '[]' | awk -F':' '{print $NF}' | grep -qw "$port"; then
@@ -1347,8 +1366,8 @@ Restart=on-failure
 RestartSec=5
 RestartPreventExitStatus=23
 LimitNOFILE=1048576
-CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
-AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+AmbientCapabilities=CAP_NET_BIND_SERVICE
 NoNewPrivileges=true
 
 [Install]
@@ -1356,6 +1375,14 @@ WantedBy=multi-user.target
 EOF
 
     chmod 644 "$service_file"
+
+    if command -v sing-box >/dev/null 2>&1; then
+        if ! sing-box check -c /etc/sing-box/config.json >/dev/null 2>&1; then
+            log error "sing-box 配置校验失败，请检查 /etc/sing-box/config.json"
+            sing-box check -c /etc/sing-box/config.json 2>&1 || true
+            return 1
+        fi
+    fi
 
     if ! systemctl daemon-reload 2>/dev/null; then
         log warn "systemd daemon-reload 失败"
@@ -1366,7 +1393,9 @@ EOF
         if systemctl is-active --quiet sing-box.service 2>/dev/null; then
             log info "sing-box 服务已启动并启用自启"
         else
-            log warn "sing-box 服务已启用但启动失败，请检查日志: journalctl -u sing-box -n 20"
+            log error "sing-box 服务已启用但启动失败，请检查日志: journalctl -u sing-box -n 50 --no-pager"
+            journalctl -u sing-box -n 50 --no-pager 2>/dev/null || true
+            return 1
         fi
     else
         log error "sing-box 服务启用失败"
