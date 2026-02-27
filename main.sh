@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
+
 set -Eeuo pipefail
+
+shopt -s inherit_errexit 2>/dev/null || true
 
 GREEN="\033[32m"
 YELLOW="\033[33m"
@@ -8,6 +11,41 @@ RESET="\033[0m"
 
 CHANNEL="main"
 DISTRO="unknown"
+
+SCRIPT_TEMP_FILES=()
+SCRIPT_EXIT_HANDLERS=()
+
+cleanup_temp_files() {
+    local file
+    for file in "${SCRIPT_TEMP_FILES[@]}"; do
+        [[ -f "$file" ]] && rm -f "$file" 2>/dev/null || true
+        [[ -d "$file" ]] && rm -rf "$file" 2>/dev/null || true
+    done
+}
+
+register_exit_handler() {
+    local handler="$1"
+    SCRIPT_EXIT_HANDLERS+=("$handler")
+}
+
+execute_exit_handlers() {
+    local handler
+    for handler in "${SCRIPT_EXIT_HANDLERS[@]}"; do
+        eval "$handler" 2>/dev/null || true
+    done
+    cleanup_temp_files
+}
+
+cleanup() {
+    local exit_code=$?
+    execute_exit_handlers
+    exit $exit_code
+}
+
+trap cleanup EXIT
+
+trap 'log error "接收到中断信号，正在清理..."; exit 130' INT
+trap 'log error "接收到终止信号，正在清理..."; exit 143' TERM
 
 log() {
     local level=$1
@@ -41,6 +79,44 @@ cmd_exists() {
     command -v "$1" >/dev/null 2>&1
 }
 
+require_cmd() {
+    local cmd="$1"
+    local install_hint="${2:-}"
+    if ! cmd_exists "$cmd"; then
+        log error "必需命令 '$cmd' 未找到"
+        [[ -n "$install_hint" ]] && log info "提示: $install_hint"
+        exit 1
+    fi
+}
+
+safe_curl() {
+    local url="$1"
+    local output="${2:-}"
+    local max_retries="${3:-3}"
+    local timeout="${4:-60}"
+    local retry_count=0
+
+    while [[ $retry_count -lt $max_retries ]]; do
+        if [[ -n "$output" ]]; then
+            if curl -sL --max-time "$timeout" -o "$output" "$url" 2>/dev/null; then
+                if [[ -s "$output" ]]; then
+                    return 0
+                fi
+            fi
+        else
+            local result
+            result=$(curl -sL --max-time "$timeout" "$url" 2>/dev/null)
+            if [[ -n "$result" ]]; then
+                echo "$result"
+                return 0
+            fi
+        fi
+        ((retry_count++))
+        [[ $retry_count -lt $max_retries ]] && sleep 3
+    done
+    return 1
+}
+
 is_interactive() {
     [[ -t 0 ]] || [[ -c /dev/tty ]]
 }
@@ -63,14 +139,21 @@ read_prompt() {
 
 first_ipv4() {
     local timeout=${1:-6}
-    local url ip
-    for url in "https://api.ipify.org" "https://api.ip.sb/ip" "https://ifconfig.me"; do
-        ip=$(curl -4 -s --max-time "$timeout" "$url" || true)
-        if [[ -n $ip ]]; then
-            printf "%s" "$ip"
-            return
-        fi
+    local url ip max_retries=3
+    local retry_count=0
+
+    while [[ $retry_count -lt $max_retries ]]; do
+        for url in "https://api.ipify.org" "https://api.ip.sb/ip" "https://ifconfig.me"; do
+            ip=$(curl -4 -s --max-time "$timeout" "$url" 2>/dev/null || true)
+            if [[ -n $ip ]] && [[ "$ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+                printf "%s" "$ip"
+                return 0
+            fi
+        done
+        ((retry_count++))
+        [[ $retry_count -lt $max_retries ]] && sleep 2
     done
+    return 1
 }
 
 setup_locale() {
@@ -261,15 +344,21 @@ ensure_memory_dependencies() {
 }
 
 is_zram_active() {
-    grep -q "/dev/zram0" /proc/swaps 2>/dev/null
+    [[ -f /proc/swaps ]] && grep -q "/dev/zram0" /proc/swaps
 }
 
 is_disk_swap_active() {
-    awk 'NR>1 && $1 != "/dev/zram0" {exit 0} END {exit 1}' /proc/swaps 2>/dev/null
+    if cmd_exists swapon; then
+        swapon --show --noheadings 2>/dev/null | awk '{print $1}' | grep -qv "/dev/zram0"
+        return $?
+    fi
+    return 1
 }
 
 list_swap_devices() {
-    awk 'NR>1 {print $1}' /proc/swaps 2>/dev/null
+    if cmd_exists swapon; then
+        swapon --show --noheadings 2>/dev/null | awk '{print $1}'
+    fi
 }
 
 get_zram_active_algo() {
@@ -295,26 +384,27 @@ print_current_swap_status() {
         local zram_mb zram_algo zram_prio
         zram_mb=$(get_zram_size_mb)
         zram_algo=$(get_zram_active_algo)
-        zram_prio=$(awk '$1=="/dev/zram0"{print $5}' /proc/swaps 2>/dev/null || echo "")
-        
+        if cmd_exists swapon; then
+            zram_prio=$(swapon --show --noheadings --output=NAME,PRIO 2>/dev/null | awk '$1=="/dev/zram0"{print $2; exit}')
+        fi
         [[ -n "${zram_mb}" ]] && log info "ZRAM 大小：${zram_mb}MB"
         [[ -n "${zram_algo}" ]] && log info "ZRAM 压缩算法：${zram_algo}"
-        [[ -n "${zram_prio}" ]] && log info "ZRAM 优先级：${zram_prio}"
+        [[ -n "${zram_prio:-}" ]] && log info "ZRAM 优先级：${zram_prio}"
     else
         log info "ZRAM：未启用"
     fi
 
-    if [[ -f /proc/swaps ]]; then
+    if cmd_exists swapon; then
         local swap_list
-        swap_list=$(awk 'NR>1 {printf "%-20s %-10s %-10s %-10s %-10s\n", $1, $2, $3, $4, $5}' /proc/swaps)
+        swap_list=$(swapon --show --noheadings --output=NAME,TYPE,SIZE,USED,PRIO 2>/dev/null | sed '/^$/d')
         if [[ -n "$swap_list" ]]; then
-            log info "Swap 列表 (文件名 类型 大小 已用 优先级)："
+            log info "Swap 列表："
             printf "%s\n" "$swap_list"
         else
             log info "Swap：未启用"
         fi
     else
-        log info "Swap：无法检测 (/proc/swaps 不存在)"
+        log info "Swap：无法检测（缺少 swapon）"
     fi
 }
 
@@ -419,10 +509,21 @@ configure_zram_swap() {
     local zram_mb="$1"
     local zram_algo="${2:-lz4}"
     local zram_priority="${3:-100}"
+    local max_retries=3
+    local retry_count=0
 
     ensure_memory_dependencies
 
-    if ! modprobe zram num_devices=1 >/dev/null 2>&1; then
+    while [[ $retry_count -lt $max_retries ]]; do
+        if modprobe zram num_devices=1 >/dev/null 2>&1; then
+            break
+        fi
+        ((retry_count++))
+        log warn "zram 模块加载失败，重试 ${retry_count}/${max_retries}..."
+        sleep 1
+    done
+
+    if [[ $retry_count -eq $max_retries ]]; then
         log warn "加载 zram 模块失败，跳过 zram 配置"
         return 1
     fi
@@ -441,15 +542,28 @@ configure_zram_swap() {
     enable_zram_service
     apply_memory_tuning "100" "50"
 
+    local zram_wait=0
+    while [[ $zram_wait -lt 10 ]]; do
+        if is_zram_active; then
+            break
+        fi
+        sleep 1
+        ((zram_wait++))
+    done
+
     if systemd_available; then
-        if systemctl is-active --quiet "$(basename "${ZRAM_SERVICE_FILE}")"; then
+        if systemctl is-active --quiet "$(basename "${ZRAM_SERVICE_FILE}")" && is_zram_active; then
             log info "ZRAM 已启用并设置开机自启"
         else
             log warn "ZRAM 服务启动失败，请检查 systemd 日志"
         fi
     else
         "${ZRAM_SCRIPT_PATH}" start >/dev/null 2>&1 || true
-        log warn "未检测到 systemd，ZRAM 仅在当前会话生效"
+        if is_zram_active; then
+            log info "ZRAM 已启用（当前会话有效）"
+        else
+            log warn "ZRAM 启动失败"
+        fi
     fi
 }
 
@@ -496,29 +610,34 @@ create_swap_file() {
         rm -f /swapfile
     fi
 
-    if dd if=/dev/zero of=/swapfile bs=1M count="${swap_size}" 2>/dev/null; then
-        chmod 600 /swapfile
-        if mkswap /swapfile >/dev/null 2>&1; then
-            if swapon /swapfile >/dev/null 2>&1; then
-                if ! grep -q "/swapfile" /etc/fstab 2>/dev/null; then
-                    echo "/swapfile none swap defaults 0 0" >> /etc/fstab
-                fi
+    local temp_swapfile="/swapfile.tmp.$$"
 
-                local swappiness=10
-                local vfs_cache_pressure=50
-                if is_zram_active; then
-                    swappiness=100
-                fi
-                apply_memory_tuning "${swappiness}" "${vfs_cache_pressure}"
+    if dd if=/dev/zero of="${temp_swapfile}" bs=1M count="${swap_size}" 2>/dev/null; then
+        chmod 600 "${temp_swapfile}"
+        if mkswap "${temp_swapfile}" >/dev/null 2>&1; then
+            if mv "${temp_swapfile}" /swapfile 2>/dev/null; then
+                if swapon /swapfile >/dev/null 2>&1; then
+                    if ! grep -q "/swapfile" /etc/fstab 2>/dev/null; then
+                        echo "/swapfile none swap defaults 0 0" >> /etc/fstab
+                    fi
 
-                log info "swap 创建并启用成功"
-                return 0
+                    local swappiness=10
+                    local vfs_cache_pressure=50
+                    if is_zram_active; then
+                        swappiness=100
+                    fi
+                    apply_memory_tuning "${swappiness}" "${vfs_cache_pressure}"
+
+                    log info "swap 创建并启用成功"
+                    return 0
+                fi
             fi
         fi
     fi
 
     log warn "swap 创建失败"
-    rm -f /swapfile >/dev/null 2>&1 || true
+    swapoff /swapfile 2>/dev/null || true
+    rm -f /swapfile "${temp_swapfile}" >/dev/null 2>&1 || true
     return 1
 }
 
@@ -528,10 +647,35 @@ setup_hybrid_memory() {
         return 0
     fi
 
-    if is_zram_active || is_disk_swap_active; then
+    local has_zram=0
+    local has_swap=0
+    local need_zram=0
+    local need_swap=0
+
+    if is_zram_active; then
+        has_zram=1
+        log info "检测到 ZRAM 已启用"
+    fi
+
+    if is_disk_swap_active; then
+        has_swap=1
+        log info "检测到 Swap 已启用"
+    fi
+
+    if [[ $has_zram -eq 1 && $has_swap -eq 1 ]]; then
         print_current_swap_status
-        log info "检测到 ZRAM 或 Swap 已配置，跳过"
+        log info "ZRAM 和 Swap 都已配置，跳过混合内存设置"
         return 0
+    fi
+
+    if [[ $has_zram -eq 0 ]]; then
+        need_zram=1
+        log info "需要配置 ZRAM"
+    fi
+
+    if [[ $has_swap -eq 0 ]]; then
+        need_swap=1
+        log info "需要配置 Swap"
     fi
 
     if is_interactive; then
@@ -575,28 +719,14 @@ setup_hybrid_memory() {
 
     log info "推荐方案：zram ${rec_zram}MB + swap ${rec_swap}MB"
 
-    if [[ $rec_zram -gt 0 ]]; then
+    if [[ $need_zram -eq 1 && $rec_zram -gt 0 ]]; then
         if ! configure_zram_swap "${rec_zram}" "lz4" "100"; then
             log warn "ZRAM 配置失败，继续后续流程"
         fi
     fi
 
-    if [[ $rec_swap -gt 0 ]]; then
-        if [[ -n "${existing_swap}" ]]; then
-            if is_interactive; then
-                local replace_choice
-                replace_choice=$(read_prompt "检测到已有 swap，是否仍创建/替换 /swapfile? [y/N]: " "N")
-                if [[ "$replace_choice" =~ ^[Yy]$ ]]; then
-                    create_swap_file "${rec_swap}" || true
-                else
-                    log info "保留现有 swap，跳过 /swapfile 创建"
-                fi
-            else
-                log info "检测到已有 swap，跳过 /swapfile 创建"
-            fi
-        else
-            create_swap_file "${rec_swap}" || true
-        fi
+    if [[ $need_swap -eq 1 && $rec_swap -gt 0 ]]; then
+        create_swap_file "${rec_swap}" || true
     else
         log info "未创建新的 swap 文件"
     fi
@@ -633,18 +763,49 @@ install_dependencies() {
 }
 
 ensure_network_stack() {
-    local ipv4 attempt
-    for attempt in 1 2 3; do
-        ipv4=$(first_ipv4 4 || true)
+    log info "检查网络连通性..."
+
+    local test_urls=("https://1.1.1.1" "https://8.8.8.8" "https://223.5.5.5")
+    local network_ok=0
+
+    for url in "${test_urls[@]}"; do
+        if curl -s --max-time 5 -o /dev/null "$url" 2>/dev/null; then
+            network_ok=1
+            break
+        fi
+    done
+
+    if [[ $network_ok -eq 0 ]]; then
+        log warn "网络连接可能受限，将继续尝试..."
+    else
+        log info "网络连接正常"
+    fi
+
+    local ipv4 attempt max_attempts=5
+    for attempt in 1 2 3 4 5; do
+        ipv4=$(first_ipv4 6 || true)
         if [[ -n $ipv4 ]]; then
             PUBLIC_IP="$ipv4"
             log info "检测到 IPv4 地址：$ipv4"
-            return
+            return 0
         fi
         log warn "第 ${attempt} 次尝试未获取到公网 IPv4，稍后重试..."
-        sleep 2
+        sleep 3
     done
-    log error "连续 3 次未检测到公网 IPv4 地址，请检查网络连通性后重试"
+
+    log error "连续 ${max_attempts} 次未检测到公网 IPv4 地址"
+    log info "尝试使用本地 IP 作为备选..."
+
+    local local_ip
+    local_ip=$(hostname -I 2>/dev/null | awk '{print $1}' || true)
+    if [[ -n $local_ip ]]; then
+        PUBLIC_IP="$local_ip"
+        log warn "使用本地 IP 作为公网 IP 备选: $local_ip"
+        log warn "注意：这可能影响客户端连接，请确保服务器有公网 IP"
+        return 0
+    fi
+
+    log error "无法获取任何可用的 IP 地址，请检查网络配置"
     exit 1
 }
 
@@ -778,12 +939,23 @@ detect_arch() {
 
 fetch_latest_singbox() {
     local api_url="https://api.github.com/repos/SagerNet/sing-box/releases/latest"
-    local tag
-    tag=$(curl -s "$api_url" | grep -oP '"tag_name":\s*"\K[^"]+')
+    local tag max_retries=3 retry_count=0
+
+    while [[ $retry_count -lt $max_retries ]]; do
+        tag=$(curl -s --max-time 30 "$api_url" 2>/dev/null | grep -oP '"tag_name":\s*"\K[^"]+' || true)
+        if [[ -n $tag ]]; then
+            break
+        fi
+        ((retry_count++))
+        log warn "获取 sing-box 版本信息失败，重试 ${retry_count}/${max_retries}..."
+        sleep 3
+    done
+
     if [[ -z $tag ]]; then
-        log error "无法获取sing-box最新版本信息"
+        log error "无法获取 sing-box 最新版本信息，请检查网络连接"
         exit 1
     fi
+
     SINGBOX_TAG="$tag"
     local version="${tag#v}"
     SINGBOX_FILENAME="sing-box-${version}-linux-${ARCH}.tar.gz"
@@ -792,25 +964,74 @@ fetch_latest_singbox() {
 
 install_singbox() {
     if command -v sing-box >/dev/null 2>&1; then
-        log info "检测到已安装sing-box，跳过下载"
-        return
+        local installed_version
+        installed_version=$(sing-box version 2>/dev/null | head -n1 | grep -oP 'sing-box version \K[^ ]+' || echo "unknown")
+        log info "检测到已安装 sing-box ${installed_version}，跳过下载"
+        return 0
     fi
+
     detect_arch
     fetch_latest_singbox
     log info "下载并安装 sing-box ${SINGBOX_TAG}"
+
     local tmpdir
     tmpdir=$(mktemp -d)
-    trap 'rm -rf "$tmpdir"' EXIT
-    curl -Ls "$SINGBOX_DOWNLOAD_URL" -o "$tmpdir/sing-box.tar.gz"
-    tar -xf "$tmpdir/sing-box.tar.gz" -C "$tmpdir"
-    local extracted
-    extracted=$(find "$tmpdir" -maxdepth 1 -type d -name "sing-box*" | head -n 1)
-    if [[ -z $extracted ]]; then
-        log error "解压sing-box失败"
+
+    cleanup() {
+        rm -rf "$tmpdir"
+    }
+    trap cleanup EXIT
+
+    local max_retries=3
+    local retry_count=0
+    local download_success=0
+
+    while [[ $retry_count -lt $max_retries ]]; do
+        if curl -Ls --max-time 120 -o "$tmpdir/sing-box.tar.gz" "$SINGBOX_DOWNLOAD_URL" 2>/dev/null; then
+            if [[ -s "$tmpdir/sing-box.tar.gz" ]]; then
+                download_success=1
+                break
+            fi
+        fi
+        ((retry_count++))
+        log warn "下载 sing-box 失败，重试 ${retry_count}/${max_retries}..."
+        sleep 5
+    done
+
+    if [[ $download_success -eq 0 ]]; then
+        log error "下载 sing-box 失败，请检查网络连接"
         exit 1
     fi
 
-    install -Dm755 "${extracted}/sing-box" /usr/local/bin/sing-box
+    if ! tar -tf "$tmpdir/sing-box.tar.gz" >/dev/null 2>&1; then
+        log error "下载的 sing-box 压缩包损坏"
+        exit 1
+    fi
+
+    if ! tar -xf "$tmpdir/sing-box.tar.gz" -C "$tmpdir" 2>/dev/null; then
+        log error "解压 sing-box 失败"
+        exit 1
+    fi
+
+    local extracted
+    extracted=$(find "$tmpdir" -maxdepth 1 -type d -name "sing-box*" | head -n 1)
+    if [[ -z $extracted ]] || [[ ! -f "${extracted}/sing-box" ]]; then
+        log error "解压后的 sing-box 可执行文件不存在"
+        exit 1
+    fi
+
+    install -Dm755 "${extracted}/sing-box" /usr/local/bin/sing-box || {
+        log error "安装 sing-box 到 /usr/local/bin 失败"
+        exit 1
+    }
+
+    if [[ ! -x /usr/local/bin/sing-box ]]; then
+        log error "sing-box 安装后无法执行"
+        exit 1
+    fi
+
+    mkdir -p /usr/local/share/sing-box
+
     if [[ -f "${extracted}/geoip.db" ]]; then
         install -Dm644 "${extracted}/geoip.db" /usr/local/share/sing-box/geoip.db
     fi
@@ -818,8 +1039,10 @@ install_singbox() {
         install -Dm644 "${extracted}/geosite.db" /usr/local/share/sing-box/geosite.db
     fi
 
-    rm -rf "$tmpdir"
     trap - EXIT
+    cleanup
+
+    log info "sing-box ${SINGBOX_TAG} 安装成功"
 }
 
 ensure_system_user() {
@@ -957,7 +1180,13 @@ create_config() {
     local config_dir="/etc/sing-box"
     local port uuid short_id server_name listen_address
     port=$(generate_port)
-    uuid=$(cat /proc/sys/kernel/random/uuid)
+
+    if [[ -f /proc/sys/kernel/random/uuid ]]; then
+        uuid=$(cat /proc/sys/kernel/random/uuid 2>/dev/null) || uuid=$(cat /proc/sys/kernel/random/uuid)
+    else
+        uuid=$(openssl rand -hex 16 2>/dev/null || date +%s | sha256sum | head -c 32 | sed 's/../&-/g; s/-$//')
+    fi
+
     short_id=$(generate_short_id)
     local default_server="icloud.com"
     if [[ -n ${VISION_SERVER_NAME:-} ]]; then
@@ -967,9 +1196,23 @@ create_config() {
     fi
     listen_address="0.0.0.0"
     generate_reality_keys
-    install -d -m 750 "$config_dir"
 
-    echo "$PUBLIC_KEY" > "${config_dir}/public.key"
+    if [[ -d "$config_dir" ]]; then
+        local backup_dir="${config_dir}.backup.$(date +%Y%m%d_%H%M%S)"
+        if cp -r "$config_dir" "$backup_dir" 2>/dev/null; then
+            log info "已备份旧配置到 ${backup_dir}"
+        fi
+    fi
+
+    install -d -m 750 "$config_dir" || {
+        log error "无法创建配置目录 ${config_dir}"
+        exit 1
+    }
+
+    echo "$PUBLIC_KEY" > "${config_dir}/public.key" || {
+        log error "无法写入公钥文件"
+        exit 1
+    }
     chmod 644 "${config_dir}/public.key"
     
     cat >"${config_dir}/config.json" <<EOF
@@ -1029,30 +1272,58 @@ EOF
 
 create_service() {
     if ! command -v systemctl >/dev/null 2>&1; then
-        log error "未检测到systemd环境，请手动管理 sing-box 进程"
-        exit 1
+        log warn "未检测到systemd环境，请手动管理 sing-box 进程"
+        return 1
     fi
-    cat >/etc/systemd/system/sing-box.service <<'EOF'
+
+    local service_file="/etc/systemd/system/sing-box.service"
+
+    if [[ -f "$service_file" ]]; then
+        systemctl stop sing-box.service 2>/dev/null || true
+        cp "$service_file" "${service_file}.backup.$(date +%Y%m%d_%H%M%S)" 2>/dev/null || true
+    fi
+
+    cat >"$service_file" <<'EOF'
 [Unit]
 Description=sing-box service
 After=network-online.target
 Wants=network-online.target
 
 [Service]
+Type=simple
 User=sing-box
 Group=sing-box
 ExecStart=/usr/local/bin/sing-box run -c /etc/sing-box/config.json
+ExecReload=/bin/kill -HUP $MAINPID
 Restart=on-failure
-RestartSec=3
+RestartSec=5
+RestartPreventExitStatus=23
 LimitNOFILE=1048576
 CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
 AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
+NoNewPrivileges=true
 
 [Install]
 WantedBy=multi-user.target
 EOF
-    systemctl daemon-reload
-    systemctl enable --now sing-box.service
+
+    chmod 644 "$service_file"
+
+    if ! systemctl daemon-reload 2>/dev/null; then
+        log warn "systemd daemon-reload 失败"
+    fi
+
+    if systemctl enable --now sing-box.service 2>/dev/null; then
+        sleep 2
+        if systemctl is-active --quiet sing-box.service 2>/dev/null; then
+            log info "sing-box 服务已启动并启用自启"
+        else
+            log warn "sing-box 服务已启用但启动失败，请检查日志: journalctl -u sing-box -n 20"
+        fi
+    else
+        log error "sing-box 服务启用失败"
+        return 1
+    fi
 }
 
 get_public_ip() {
@@ -1089,19 +1360,63 @@ print_summary() {
 }
 
 install_workflow() {
-    check_existing_installation
-    detect_package_manager
-    setup_locale
-    install_dependencies
-    detect_release
-    setup_hybrid_memory
-    ensure_network_stack
-    enable_bbr
-    install_singbox
-    ensure_system_user
-    create_config
-    create_service
-    setup_cron_restart
+    local step=0
+    local total_steps=13
+
+    log info "开始安装流程..."
+
+    ((step++))
+    log info "[$step/$total_steps] 检查现有安装..."
+    check_existing_installation || { log error "检查现有安装失败"; exit 1; }
+
+    ((step++))
+    log info "[$step/$total_steps] 检测包管理器..."
+    detect_package_manager || { log error "检测包管理器失败"; exit 1; }
+
+    ((step++))
+    log info "[$step/$total_steps] 设置 locale..."
+    setup_locale || log warn "设置 locale 部分失败，继续..."
+
+    ((step++))
+    log info "[$step/$total_steps] 安装依赖..."
+    install_dependencies || { log error "安装依赖失败"; exit 1; }
+
+    ((step++))
+    log info "[$step/$total_steps] 检测系统版本..."
+    detect_release || log warn "检测系统版本失败，继续..."
+
+    ((step++))
+    log info "[$step/$total_steps] 设置混合内存..."
+    setup_hybrid_memory || log warn "设置混合内存部分失败，继续..."
+
+    ((step++))
+    log info "[$step/$total_steps] 检查网络..."
+    ensure_network_stack || { log error "网络检查失败"; exit 1; }
+
+    ((step++))
+    log info "[$step/$total_steps] 启用 BBR..."
+    enable_bbr || log warn "启用 BBR 失败，继续..."
+
+    ((step++))
+    log info "[$step/$total_steps] 安装 sing-box..."
+    install_singbox || { log error "安装 sing-box 失败"; exit 1; }
+
+    ((step++))
+    log info "[$step/$total_steps] 创建系统用户..."
+    ensure_system_user || { log error "创建系统用户失败"; exit 1; }
+
+    ((step++))
+    log info "[$step/$total_steps] 创建配置文件..."
+    create_config || { log error "创建配置文件失败"; exit 1; }
+
+    ((step++))
+    log info "[$step/$total_steps] 创建系统服务..."
+    create_service || { log error "创建系统服务失败"; exit 1; }
+
+    ((step++))
+    log info "[$step/$total_steps] 设置定时任务..."
+    setup_cron_restart || log warn "设置定时任务失败，继续..."
+
     print_summary
 }
 
