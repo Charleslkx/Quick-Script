@@ -880,7 +880,8 @@ check_existing_installation() {
         port=$(echo "$config_content" | sed -n 's/.*"listen_port":\([0-9]*\).*/\1/p')
         uuid=$(echo "$config_content" | sed -n 's/.*"uuid":"\([^"]*\)".*/\1/p')
         sni=$(echo "$config_content" | sed -n 's/.*"server_name":"\([^"]*\)".*/\1/p')
-        short_id=$(echo "$config_content" | sed -n 's/.*"short_id":\["\([^"]*\)".*/\1/p')
+        short_id=$(echo "$config_content" | sed -n 's/.*"short_id":\["[^"]*","\([^"]*\)".*/\1/p')
+        [[ -z "$short_id" ]] && short_id=$(echo "$config_content" | sed -n 's/.*"short_id":\["\([^"]*\)".*/\1/p')
         
         [[ -z "$port" ]] && port="unknown"
         [[ -z "$uuid" ]] && uuid="unknown"
@@ -1178,9 +1179,9 @@ generate_port() {
 
 generate_short_id() {
     if command -v openssl >/dev/null 2>&1; then
-        openssl rand -hex 4
+        openssl rand -hex 8
     else
-        tr -dc 'a-f0-9' </dev/urandom | head -c 8
+        tr -dc 'a-f0-9' </dev/urandom | head -c 16
     fi
 }
 
@@ -1197,7 +1198,7 @@ generate_reality_keys() {
 
 create_config() {
     local config_dir="/etc/sing-box"
-    local port uuid short_id server_name listen_address
+    local port uuid short_id server_name
     port=$(generate_port)
 
     if [[ -f /proc/sys/kernel/random/uuid ]]; then
@@ -1261,7 +1262,6 @@ create_config() {
         server_name="$default_server"
     fi
 
-    listen_address="0.0.0.0"
     generate_reality_keys
 
     if [[ -d "$config_dir" ]]; then
@@ -1281,6 +1281,13 @@ create_config() {
         exit 1
     }
     chmod 644 "${config_dir}/public.key"
+
+    # 兼容 install.sh 的 reality_key 读取方式
+    cat > "${config_dir}/reality_key" <<EOF
+privateKey:${PRIVATE_KEY}
+publicKey:${PUBLIC_KEY}
+EOF
+    chmod 600 "${config_dir}/reality_key"
     
     cat >"${config_dir}/config.json" <<EOF
 {
@@ -1292,13 +1299,14 @@ create_config() {
   "inbounds": [
     {
       "type": "vless",
-      "tag": "vless-reality",
-      "listen": "${listen_address}",
+      "listen": "::",
       "listen_port": ${port},
+      "tag": "VLESSReality",
       "users": [
         {
           "uuid": "${uuid}",
-          "flow": "xtls-rprx-vision"
+          "flow": "xtls-rprx-vision",
+          "name": "quick-script-VLESS_Reality_Vision"
         }
       ],
       "tls": {
@@ -1312,6 +1320,7 @@ create_config() {
           },
           "private_key": "${PRIVATE_KEY}",
           "short_id": [
+            "",
             "${short_id}"
           ]
         }
