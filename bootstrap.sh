@@ -73,7 +73,11 @@ parse_channel_args() {
 }
 
 run_remote_script() {
-    local script_url="${BASE_URL}/main.sh"
+    local cache_suffix=""
+    if [[ "${ONE_SCRIPT_DISABLE_CACHE_BUSTER:-0}" != "1" ]]; then
+        cache_suffix="?t=$(date +%s)"
+    fi
+    local script_url="${BASE_URL}/main.sh${cache_suffix}"
     local temp_script
     local download_success=0
 
