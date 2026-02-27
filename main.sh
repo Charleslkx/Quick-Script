@@ -13,7 +13,6 @@ CHANNEL="main"
 DISTRO="unknown"
 
 SCRIPT_TEMP_FILES=()
-SCRIPT_EXIT_HANDLERS=()
 
 cleanup_temp_files() {
     local file
@@ -23,22 +22,9 @@ cleanup_temp_files() {
     done
 }
 
-register_exit_handler() {
-    local handler="$1"
-    SCRIPT_EXIT_HANDLERS+=("$handler")
-}
-
-execute_exit_handlers() {
-    local handler
-    for handler in "${SCRIPT_EXIT_HANDLERS[@]}"; do
-        eval "$handler" 2>/dev/null || true
-    done
-    cleanup_temp_files
-}
-
 cleanup() {
     local exit_code=$?
-    execute_exit_handlers
+    cleanup_temp_files
     exit $exit_code
 }
 
@@ -50,11 +36,27 @@ trap 'log error "接收到终止信号，正在清理..."; exit 143' TERM
 log() {
     local level=$1
     shift
+    local timestamp tag color
+    timestamp=$(date '+%Y-%m-%d %H:%M:%S')
     case "$level" in
-        info) printf "%b[信息]%b %s\n" "$GREEN" "$RESET" "$*" ;;
-        warn) printf "%b[警告]%b %s\n" "$YELLOW" "$RESET" "$*" ;;
-        error) printf "%b[错误]%b %s\n" "$RED" "$RESET" "$*" ;;
+        info)
+            tag="INFO"
+            color="$GREEN"
+            ;;
+        warn)
+            tag="WARN"
+            color="$YELLOW"
+            ;;
+        error)
+            tag="ERROR"
+            color="$RED"
+            ;;
+        *)
+            tag="LOG"
+            color="$RESET"
+            ;;
     esac
+    printf "%b[%s]%b %s %s\n" "$color" "$tag" "$RESET" "$timestamp" "$*" >&2
 }
 
 normalize_channel() {
@@ -77,44 +79,6 @@ init_channel() {
 
 cmd_exists() {
     command -v "$1" >/dev/null 2>&1
-}
-
-require_cmd() {
-    local cmd="$1"
-    local install_hint="${2:-}"
-    if ! cmd_exists "$cmd"; then
-        log error "必需命令 '$cmd' 未找到"
-        [[ -n "$install_hint" ]] && log info "提示: $install_hint"
-        exit 1
-    fi
-}
-
-safe_curl() {
-    local url="$1"
-    local output="${2:-}"
-    local max_retries="${3:-3}"
-    local timeout="${4:-60}"
-    local retry_count=0
-
-    while [[ $retry_count -lt $max_retries ]]; do
-        if [[ -n "$output" ]]; then
-            if curl -sL --max-time "$timeout" -o "$output" "$url" 2>/dev/null; then
-                if [[ -s "$output" ]]; then
-                    return 0
-                fi
-            fi
-        else
-            local result
-            result=$(curl -sL --max-time "$timeout" "$url" 2>/dev/null)
-            if [[ -n "$result" ]]; then
-                echo "$result"
-                return 0
-            fi
-        fi
-        retry_count=$((retry_count + 1))
-        [[ $retry_count -lt $max_retries ]] && sleep 3
-    done
-    return 1
 }
 
 is_interactive() {
@@ -235,25 +199,12 @@ check_login_shell() {
 
     log warn "检测到您可能使用 'su' 而非 'su -' 进入 root 用户"
     log warn "这可能导致 PATH 环境变量不完整，影响脚本执行"
-    echo "================================================"
-    echo "当前 PATH: $PATH"
-    echo "建议使用 'su -' 或 'sudo -i' 来获得完整的 root 环境"
-    echo "================================================"
-    
-    printf "是否使用完整登录 shell 重新执行脚本? [Y/n] "
-    
-    local choice
-    # 兼容 curl | bash 模式
-    if [[ -t 0 ]]; then
-        read -r choice
-    elif [[ -c /dev/tty ]]; then
-        read -r choice </dev/tty || choice="y"
-    else
-        choice="y"
-    fi
+    log info "当前 PATH: $PATH"
+    log info "建议使用 'su -' 或 'sudo -i' 获取完整 root 环境"
 
-    choice=${choice:-y}
-    
+    local choice
+    choice=$(read_prompt "是否使用完整登录 shell 重新执行脚本? [Y/n]: " "y")
+
     case "$choice" in
         [nN][oO]|[nN])
             log warn "用户选择继续当前环境，可能会遇到命令找不到的问题"
@@ -890,31 +841,23 @@ check_existing_installation() {
         
         server_ip=$(get_public_ip)
         
-        echo "==============================================="
-        echo "当前配置信息:"
-        echo "端口: $port"
-        echo "UUID: $uuid"
-        echo "SNI:  $sni"
-        echo "配置路径: $config"
+        log info "当前配置信息:"
+        log info "端口: $port"
+        log info "UUID: $uuid"
+        log info "SNI: $sni"
+        log info "配置路径: $config"
         
         if [[ -f "$pub_key_file" ]]; then
             local pbk
             pbk=$(cat "$pub_key_file")
             local link="vless://${uuid}@${server_ip}:${port}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${sni}&fp=chrome&type=tcp&headerType=none&alpn=h2&pbk=${pbk}&sid=${short_id}&dest=${sni}%3A443#singbox-existing"
-            echo "当前链接: $link"
+            log info "当前链接: $link"
         else
-            echo "当前链接: 无法完全重建 (缺少公钥文件)"
+            log warn "当前链接: 无法完全重建 (缺少公钥文件)"
         fi
-        echo "==============================================="
-        
-        printf "是否重新安装? [y/N] "
-        if [[ -t 0 ]]; then
-            read -r choice
-        elif [[ -c /dev/tty ]]; then
-            read -r choice </dev/tty || choice="n"
-        else
-            choice="n"
-        fi
+
+        local choice
+        choice=$(read_prompt "是否重新安装? [y/N]: " "n")
         
         case "$choice" in
             [yY][eE][sS]|[yY])
@@ -977,11 +920,7 @@ install_singbox() {
 
     local tmpdir
     tmpdir=$(mktemp -d)
-
-    cleanup() {
-        rm -rf "$tmpdir"
-    }
-    trap cleanup EXIT
+    SCRIPT_TEMP_FILES+=("$tmpdir")
 
     local max_retries=3
     local retry_count=0
@@ -1040,8 +979,7 @@ install_singbox() {
         install -Dm644 "${extracted}/geosite.db" /usr/local/share/sing-box/geosite.db
     fi
 
-    trap - EXIT
-    cleanup
+    rm -rf "$tmpdir" 2>/dev/null || true
 
     log info "sing-box ${SINGBOX_TAG} 安装成功"
 }
@@ -1122,25 +1060,6 @@ debug_singbox() {
     log info "调试信息收集完成"
 }
 
-existing_vless_reality() {
-    local config="/etc/sing-box/config.json"
-    if [[ -f $config ]]; then
-        if grep -Eq '"type"[[:space:]]*:[[:space:]]*"vless"' "$config" && \
-           grep -Eq '"flow"[[:space:]]*:[[:space:]]*"xtls-rprx-vision"' "$config" && \
-           grep -Eq '"reality"' "$config"; then
-            return 0
-        fi
-    fi
-    return 1
-}
-
-reset_existing_deployment_if_needed() {
-    if existing_vless_reality; then
-        log warn "检测到现有 vless+vision+reality 部署，准备重新构建..."
-        remove_singbox
-    fi
-}
-
 generate_port() {
     local port attempt has_ss preferred requested_port
 
@@ -1218,19 +1137,15 @@ create_config() {
         local i choice custom_sni
         local timeout_sec=30
 
-        echo ""
-        echo "======================================"
-        echo "  请选择 SNI (Server Name Indication)"
-        echo "======================================"
-        echo "  预设选项:"
+        log info "请选择 SNI (Server Name Indication)"
+        log info "预设选项:"
         for i in "${!prefill_servers[@]}"; do
             local marker=""
             [[ "${prefill_servers[$i]}" == "$default_server" ]] && marker=" (默认)"
-            printf "    %d) %s%s\n" "$((i+1))" "${prefill_servers[$i]}" "$marker"
+            log info "$((i + 1))) ${prefill_servers[$i]}${marker}"
         done
-        echo "    c) 自定义 SNI"
-        echo "======================================"
-        printf "  请输入选项 (1-%d/c)，%d秒后默认选择 '%s': " "${#prefill_servers[@]}" "$timeout_sec" "$default_server"
+        log info "c) 自定义 SNI"
+        printf "请输入选项 (1-%d/c)，%d秒后默认选择 '%s': " "${#prefill_servers[@]}" "$timeout_sec" "$default_server"
 
         if read -r -t "$timeout_sec" choice; then
             case "$choice" in
@@ -1238,26 +1153,23 @@ create_config() {
                     server_name="${prefill_servers[$((choice-1))]}"
                     ;;
                 c|C)
-                    read -r -p "  请输入自定义 SNI: " custom_sni
+                    custom_sni=$(read_prompt "请输入自定义 SNI: " "")
                     if [[ -n "$custom_sni" ]]; then
                         server_name="$custom_sni"
                     else
-                        log warn "  自定义 SNI 为空，使用默认值: $default_server"
+                        log warn "自定义 SNI 为空，使用默认值: $default_server"
                         server_name="$default_server"
                     fi
                     ;;
                 *)
-                    log warn "  无效选项，使用默认值: $default_server"
+                    log warn "无效选项，使用默认值: $default_server"
                     server_name="$default_server"
                     ;;
             esac
         else
-            echo ""
-            log warn "  超时未选择，使用默认值: $default_server"
+            log warn "超时未选择，使用默认值: $default_server"
             server_name="$default_server"
         fi
-        echo "======================================"
-        echo ""
     else
         server_name="$default_server"
     fi
