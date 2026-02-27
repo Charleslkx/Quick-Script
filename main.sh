@@ -1472,7 +1472,8 @@ main() {
     require_root
     check_login_shell
     init_channel
-    local action=${1:-install}
+    local action=${1:-}
+    [[ -z "$action" ]] && action="install"
     case "$action" in
         install|--install)
             install_workflow

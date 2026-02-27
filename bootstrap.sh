@@ -121,7 +121,7 @@ run_remote_script() {
 
     local script_exit_code=0
     ONE_SCRIPT_CHANNEL="${CHANNEL}" ONE_SCRIPT_BASE_URL="${BASE_URL}" \
-        bash "${temp_script}" "${REMAINING_ARGS[@]}" || script_exit_code=$?
+        bash "${temp_script}" ${REMAINING_ARGS[@]+"${REMAINING_ARGS[@]}"} || script_exit_code=$?
 
     rm -f "${temp_script}" 2>/dev/null || true
 
