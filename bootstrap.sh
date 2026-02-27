@@ -69,7 +69,7 @@ parse_channel_args() {
 
     CHANNEL="$(normalize_channel "${channel}")"
     BASE_URL="https://raw.githubusercontent.com/charleslkx/quick-script/${CHANNEL}"
-    REMAINING_ARGS=("${remaining[@]}")
+    REMAINING_ARGS=("${remaining[@]+"${remaining[@]}"}")
 }
 
 run_remote_script() {
