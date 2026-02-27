@@ -1188,12 +1188,60 @@ create_config() {
     fi
 
     short_id=$(generate_short_id)
+
     local default_server="icloud.com"
+    local prefill_servers=("amazon.com" "icloud.com" "microsoft.com")
+
     if [[ -n ${VISION_SERVER_NAME:-} ]]; then
         server_name=$VISION_SERVER_NAME
+    elif is_interactive; then
+        local i choice custom_sni
+        local timeout_sec=30
+
+        echo ""
+        echo "======================================"
+        echo "  请选择 SNI (Server Name Indication)"
+        echo "======================================"
+        echo "  预设选项:"
+        for i in "${!prefill_servers[@]}"; do
+            local marker=""
+            [[ "${prefill_servers[$i]}" == "$default_server" ]] && marker=" (默认)"
+            printf "    %d) %s%s\n" "$((i+1))" "${prefill_servers[$i]}" "$marker"
+        done
+        echo "    c) 自定义 SNI"
+        echo "======================================"
+        printf "  请输入选项 (1-%d/c)，%d秒后默认选择 '%s': " "${#prefill_servers[@]}" "$timeout_sec" "$default_server"
+
+        if read -r -t "$timeout_sec" choice; then
+            case "$choice" in
+                [1-3])
+                    server_name="${prefill_servers[$((choice-1))]}"
+                    ;;
+                c|C)
+                    read -r -p "  请输入自定义 SNI: " custom_sni
+                    if [[ -n "$custom_sni" ]]; then
+                        server_name="$custom_sni"
+                    else
+                        log warn "  自定义 SNI 为空，使用默认值: $default_server"
+                        server_name="$default_server"
+                    fi
+                    ;;
+                *)
+                    log warn "  无效选项，使用默认值: $default_server"
+                    server_name="$default_server"
+                    ;;
+            esac
+        else
+            echo ""
+            log warn "  超时未选择，使用默认值: $default_server"
+            server_name="$default_server"
+        fi
+        echo "======================================"
+        echo ""
     else
-        server_name=$default_server
+        server_name="$default_server"
     fi
+
     listen_address="0.0.0.0"
     generate_reality_keys
 
