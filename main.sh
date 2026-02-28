@@ -4,12 +4,24 @@ set -Eeuo pipefail
 
 shopt -s inherit_errexit 2>/dev/null || true
 
-GREEN="\033[32m"
-YELLOW="\033[33m"
-RED="\033[31m"
-BLUE="\033[34m"
-CYAN="\033[36m"
-RESET="\033[0m"
+# ANSI Colors
+C_RESET="\033[0m"
+C_RED="\033[1;31m"
+C_GREEN="\033[1;32m"
+C_YELLOW="\033[1;33m"
+C_BLUE="\033[1;34m"
+C_PURPLE="\033[1;35m"
+C_CYAN="\033[1;36m"
+C_WHITE="\033[1;37m"
+C_GRAY="\033[90m"
+
+# Icons
+I_INFO="${C_BLUE}[i]${C_RESET}"
+I_SUCCESS="${C_GREEN}[✓]${C_RESET}"
+I_WARN="${C_YELLOW}[!]${C_RESET}"
+I_ERROR="${C_RED}[✗]${C_RESET}"
+I_STEP="${C_PURPLE}==>${C_RESET}"
+I_ARROW="${C_CYAN}[➜]${C_RESET}"
 
 CHANNEL="main"
 DISTRO="unknown"
@@ -18,7 +30,8 @@ SCRIPT_TEMP_FILES=()
 
 cleanup_temp_files() {
     local file
-    for file in "${SCRIPT_TEMP_FILES[@]}"; do
+    for file in "${SCRIPT_TEMP_FILES[@]:-}"; do
+        [[ -n "$file" ]] || continue
         [[ -f "$file" ]] && rm -f "$file" 2>/dev/null || true
         [[ -d "$file" ]] && rm -rf "$file" 2>/dev/null || true
     done
@@ -38,56 +51,58 @@ trap 'log error "接收到终止信号，正在清理..."; exit 143' TERM
 log() {
     local level=$1
     shift
-    local message timestamp tag color
-    message="$*"
-    timestamp=$(date '+%Y-%m-%d %H:%M:%S')
+    local message="$*"
+    local timestamp color icon
+    timestamp="${C_GRAY}$(date '+%H:%M:%S')${C_RESET}"
+    
     case "$level" in
         info)
-            tag="INFO"
             if [[ "$message" =~ ^\[[0-9]+/[0-9]+\] ]]; then
-                color="$CYAN"
+                icon="${I_STEP}"
+                color="${C_CYAN}"
             elif [[ "$message" == *"成功"* || "$message" == *"完成"* || "$message" == *"正常"* || "$message" == *"已存在"* || "$message" == *"已设置"* || "$message" == *"已启用"* || "$message" == *"已启动"* || "$message" == *"检测到 IPv4"* ]]; then
-                color="$GREEN"
+                icon="${I_SUCCESS}"
+                color="${C_GREEN}"
             elif [[ "$message" == *"开始"* || "$message" == *"检查"* || "$message" == *"安装"* || "$message" == *"检测"* || "$message" == *"设置"* || "$message" == *"创建"* || "$message" == *"下载"* || "$message" == *"配置"* || "$message" == *"启用"* || "$message" == *"重试"* || "$message" == *"正在"* ]]; then
-                color="$CYAN"
+                icon="${I_ARROW}"
+                color="${C_CYAN}"
             else
-                color="$BLUE"
+                icon="${I_INFO}"
+                color="${C_RESET}"
             fi
             ;;
         warn)
-            tag="WARN"
-            color="$YELLOW"
+            icon="${I_WARN}"
+            color="${C_YELLOW}"
             ;;
         error)
-            tag="ERROR"
-            color="$RED"
+            icon="${I_ERROR}"
+            color="${C_RED}"
             ;;
         *)
-            tag="LOG"
-            color="$RESET"
+            icon="${C_GRAY}[*]${C_RESET}"
+            color="${C_RESET}"
             ;;
     esac
-    printf "%b[%s]%b %s %s\n" "$color" "$tag" "$RESET" "$timestamp" "$message" >&2
+    
+    printf "%b %b %b%s%b\n" "$timestamp" "$icon" "$color" "$message" "$C_RESET" >&2
 }
 
 print_box() {
     local title="$1"
     shift
     local lines=("$@")
-    local width=58
-    local border
-    border=$(printf '%*s' "$width" '' | tr ' ' '-')
 
-    printf "%b+%s+%b\n" "$CYAN" "$border" "$RESET" >&2
-    printf "%b|%b %-*s %b|%b\n" "$CYAN" "$RESET" $((width - 2)) "$title" "$CYAN" "$RESET" >&2
-    printf "%b+%s+%b\n" "$CYAN" "$border" "$RESET" >&2
+    printf "\n%b┌─ %b%s%b\n" "$C_CYAN" "$C_PURPLE" "$title" "$C_RESET" >&2
+    printf "%b│%b\n" "$C_CYAN" "$C_RESET" >&2
 
     local line
     for line in "${lines[@]}"; do
-        printf "%b|%b %-*s %b|%b\n" "$CYAN" "$RESET" $((width - 2)) "$line" "$CYAN" "$RESET" >&2
+        printf "%b│  %b%s%b\n" "$C_CYAN" "$C_RESET" "$line" "$C_RESET" >&2
     done
 
-    printf "%b+%s+%b\n" "$CYAN" "$border" "$RESET" >&2
+    printf "%b│%b\n" "$C_CYAN" "$C_RESET" >&2
+    printf "%b└─────────────────────────────────────────────────────────────%b\n\n" "$C_CYAN" "$C_RESET" >&2
 }
 
 normalize_channel() {
@@ -1175,7 +1190,7 @@ create_config() {
         done
         menu_lines+=("c) 自定义 SNI")
         print_box "SNI (Server Name Indication)" "${menu_lines[@]}"
-        printf "%b选择 [1-%d/c]，%d秒后默认 '%s': %b" "$YELLOW" "${#prefill_servers[@]}" "$timeout_sec" "$default_server" "$RESET" >&2
+        printf "%b选择 [1-%d/c]，%d秒后默认 '%s': %b" "$C_YELLOW" "${#prefill_servers[@]}" "$timeout_sec" "$default_server" "$C_RESET" >&2
 
         if read -r -t "$timeout_sec" choice; then
             case "$choice" in
@@ -1377,19 +1392,32 @@ print_summary() {
         host_part="$ip"
     fi
     vless_url="vless://${CLIENT_UUID}@${host_part}:${LISTEN_PORT}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${SERVER_NAME}&fp=chrome&type=tcp&headerType=none&alpn=h2&pbk=${PUBLIC_KEY}&sid=${SHORT_ID}&dest=${SERVER_NAME}%3A443#${alias}"
-    printf "\n%b=== 部署完成 ===%b\n" "$GREEN" "$RESET"
-    printf "%b监听端口：%b%s\n" "$GREEN" "$RESET" "$LISTEN_PORT"
-    printf "%b客户端UUID：%b%s\n" "$GREEN" "$RESET" "$CLIENT_UUID"
-    printf "%bReality公钥：%b%s\n" "$GREEN" "$RESET" "$PUBLIC_KEY"
-    printf "%bReality短ID：%b%s\n" "$GREEN" "$RESET" "$SHORT_ID"
-    printf "%bSNI/回落目标：%b%s\n" "$GREEN" "$RESET" "$SERVER_NAME"
-    printf "%b服务器IP：%b%s\n" "$GREEN" "$RESET" "$ip"
-    printf "%bVLESS链接：%b\n%s\n" "$GREEN" "$RESET" "$vless_url"
+    
+    printf "\n"
+    printf "%b┌─ %b🎉 部署完成 (Deployment Success)%b\n" "$C_GREEN" "$C_WHITE" "$C_RESET"
+    printf "%b│%b\n" "$C_GREEN" "$C_RESET"
+    
+    printf "%b│  %b监听端口%b   : %b%s%b\n" "$C_GREEN" "$C_CYAN" "$C_RESET" "$C_WHITE" "$LISTEN_PORT" "$C_RESET"
+    printf "%b│  %b客户端UUID%b : %b%s%b\n" "$C_GREEN" "$C_CYAN" "$C_RESET" "$C_WHITE" "$CLIENT_UUID" "$C_RESET"
+    printf "%b│  %bReality公钥%b: %b%s%b\n" "$C_GREEN" "$C_CYAN" "$C_RESET" "$C_WHITE" "$PUBLIC_KEY" "$C_RESET"
+    printf "%b│  %bReality短ID%b: %b%s%b\n" "$C_GREEN" "$C_CYAN" "$C_RESET" "$C_WHITE" "$SHORT_ID" "$C_RESET"
+    printf "%b│  %bSNI/回落%b   : %b%s%b\n" "$C_GREEN" "$C_CYAN" "$C_RESET" "$C_WHITE" "$SERVER_NAME" "$C_RESET"
+    printf "%b│  %b服务器IP%b   : %b%s%b\n" "$C_GREEN" "$C_CYAN" "$C_RESET" "$C_WHITE" "$ip" "$C_RESET"
+    
+    printf "%b│%b\n" "$C_GREEN" "$C_RESET"
+    printf "%b│  %bVLESS 链接分享:%b\n" "$C_GREEN" "$C_CYAN" "$C_RESET"
+    printf "%b│  %b%s%b\n" "$C_GREEN" "$C_YELLOW" "$vless_url" "$C_RESET"
+    printf "%b│%b\n" "$C_GREEN" "$C_RESET"
+    printf "%b└─────────────────────────────────────────────────────────────%b\n\n" "$C_GREEN" "$C_RESET"
 }
 
 install_workflow() {
     local step=0
     local total_steps=13
+
+    printf "\n%b==============================================================%b\n" "$C_PURPLE" "$C_RESET"
+    printf "%b               🚀 开始安装 Quick-Script 环境%b\n" "$C_CYAN" "$C_RESET"
+    printf "%b==============================================================%b\n\n" "$C_PURPLE" "$C_RESET"
 
     log info "开始安装流程..."
 
