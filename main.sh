@@ -57,13 +57,15 @@ log() {
     
     case "$level" in
         info)
+            local lower_msg
+            lower_msg="$(echo "$message" | tr '[:upper:]' '[:lower:]')"
             if [[ "$message" =~ ^\[[0-9]+/[0-9]+\] ]]; then
                 icon="${I_STEP}"
                 color="${C_CYAN}"
-            elif [[ "$message" == *"Success"* || "$(echo "$message" | tr '[:upper:]' '[:lower:]')" == *"complete"* || "$(echo "$message" | tr '[:upper:]' '[:lower:]')" == *"normal"* || "$(echo "$message" | tr '[:upper:]' '[:lower:]')" == *"exists"* || "$(echo "$message" | tr '[:upper:]' '[:lower:]')" == *"set"* || "$(echo "$message" | tr '[:upper:]' '[:lower:]')" == *"enabled"* || "$(echo "$message" | tr '[:upper:]' '[:lower:]')" == *"started"* || "$(echo "$message" | tr '[:upper:]' '[:lower:]')" == *"detected"* || "$(echo "$message" | tr '[:upper:]' '[:lower:]')" == *"successful"* ]]; then
+            elif [[ "$lower_msg" == *"success"* || "$lower_msg" == *"complete"* || "$lower_msg" == *"normal"* || "$lower_msg" == *"exists"* || "$lower_msg" == *"set"* || "$lower_msg" == *"enabled"* || "$lower_msg" == *"started"* || "$lower_msg" == *"detected"* || "$lower_msg" == *"successful"* ]]; then
                 icon="${I_SUCCESS}"
                 color="${C_GREEN}"
-            elif [[ "$message" == "$(echo "$message" | tr '[:upper:]' '[:lower:]')" == *"start"* || "$(echo "$message" | tr '[:upper:]' '[:lower:]')" == *"check"* || "$(echo "$message" | tr '[:upper:]' '[:lower:]')" == *"install"* || "$(echo "$message" | tr '[:upper:]' '[:lower:]')" == *"detect"* || "$(echo "$message" | tr '[:upper:]' '[:lower:]')" == *"set"* || "$(echo "$message" | tr '[:upper:]' '[:lower:]')" == *"creat"* || "$(echo "$message" | tr '[:upper:]' '[:lower:]')" == *"download"* || "$(echo "$message" | tr '[:upper:]' '[:lower:]')" == *"config"* || "$(echo "$message" | tr '[:upper:]' '[:lower:]')" == *"enabl"* || "$(echo "$message" | tr '[:upper:]' '[:lower:]')" == *"retr"* || "$(echo "$message" | tr '[:upper:]' '[:lower:]')" == *"doing"* ]]; then
+            elif [[ "$lower_msg" == *"start"* || "$lower_msg" == *"check"* || "$lower_msg" == *"install"* || "$lower_msg" == *"detect"* || "$lower_msg" == *"creat"* || "$lower_msg" == *"download"* || "$lower_msg" == *"config"* || "$lower_msg" == *"enabl"* || "$lower_msg" == *"retr"* || "$lower_msg" == *"doing"* ]]; then
                 icon="${I_ARROW}"
                 color="${C_CYAN}"
             else
