@@ -45,8 +45,8 @@ cleanup() {
 
 trap cleanup EXIT
 
-trap 'log error "接收到中断信号，正在清理..."; exit 130' INT
-trap 'log error "接收到终止信号，正在清理..."; exit 143' TERM
+trap 'log error "Interrupt signal received, cleaning up..."; exit 130' INT
+trap 'log error "Termination signal received, cleaning up..."; exit 143' TERM
 
 log() {
     local level=$1
@@ -60,10 +60,10 @@ log() {
             if [[ "$message" =~ ^\[[0-9]+/[0-9]+\] ]]; then
                 icon="${I_STEP}"
                 color="${C_CYAN}"
-            elif [[ "$message" == *"成功"* || "$message" == *"完成"* || "$message" == *"正常"* || "$message" == *"已存在"* || "$message" == *"已设置"* || "$message" == *"已启用"* || "$message" == *"已启动"* || "$message" == *"检测到 IPv4"* ]]; then
+            elif [[ "$message" == *"Success"* || "$(echo "$message" | tr '[:upper:]' '[:lower:]')" == *"complete"* || "$(echo "$message" | tr '[:upper:]' '[:lower:]')" == *"normal"* || "$(echo "$message" | tr '[:upper:]' '[:lower:]')" == *"exists"* || "$(echo "$message" | tr '[:upper:]' '[:lower:]')" == *"set"* || "$(echo "$message" | tr '[:upper:]' '[:lower:]')" == *"enabled"* || "$(echo "$message" | tr '[:upper:]' '[:lower:]')" == *"started"* || "$(echo "$message" | tr '[:upper:]' '[:lower:]')" == *"detected"* || "$(echo "$message" | tr '[:upper:]' '[:lower:]')" == *"successful"* ]]; then
                 icon="${I_SUCCESS}"
                 color="${C_GREEN}"
-            elif [[ "$message" == *"开始"* || "$message" == *"检查"* || "$message" == *"安装"* || "$message" == *"检测"* || "$message" == *"设置"* || "$message" == *"创建"* || "$message" == *"下载"* || "$message" == *"配置"* || "$message" == *"启用"* || "$message" == *"重试"* || "$message" == *"正在"* ]]; then
+            elif [[ "$message" == "$(echo "$message" | tr '[:upper:]' '[:lower:]')" == *"start"* || "$(echo "$message" | tr '[:upper:]' '[:lower:]')" == *"check"* || "$(echo "$message" | tr '[:upper:]' '[:lower:]')" == *"install"* || "$(echo "$message" | tr '[:upper:]' '[:lower:]')" == *"detect"* || "$(echo "$message" | tr '[:upper:]' '[:lower:]')" == *"set"* || "$(echo "$message" | tr '[:upper:]' '[:lower:]')" == *"creat"* || "$(echo "$message" | tr '[:upper:]' '[:lower:]')" == *"download"* || "$(echo "$message" | tr '[:upper:]' '[:lower:]')" == *"config"* || "$(echo "$message" | tr '[:upper:]' '[:lower:]')" == *"enabl"* || "$(echo "$message" | tr '[:upper:]' '[:lower:]')" == *"retr"* || "$(echo "$message" | tr '[:upper:]' '[:lower:]')" == *"doing"* ]]; then
                 icon="${I_ARROW}"
                 color="${C_CYAN}"
             else
@@ -88,22 +88,7 @@ log() {
     printf "%b %b %b%s%b\n" "$timestamp" "$icon" "$color" "$message" "$C_RESET" >&2
 }
 
-print_box() {
-    local title="$1"
-    shift
-    local lines=("$@")
 
-    printf "\n%b┌─ %b%s%b\n" "$C_CYAN" "$C_PURPLE" "$title" "$C_RESET" >&2
-    printf "%b│%b\n" "$C_CYAN" "$C_RESET" >&2
-
-    local line
-    for line in "${lines[@]}"; do
-        printf "%b│  %b%s%b\n" "$C_CYAN" "$C_RESET" "$line" "$C_RESET" >&2
-    done
-
-    printf "%b│%b\n" "$C_CYAN" "$C_RESET" >&2
-    printf "%b└─────────────────────────────────────────────────────────────%b\n\n" "$C_CYAN" "$C_RESET" >&2
-}
 
 normalize_channel() {
     local channel
@@ -120,7 +105,7 @@ normalize_channel() {
 
 init_channel() {
     CHANNEL=$(normalize_channel "${ONE_SCRIPT_CHANNEL:-}")
-    log info "当前渠道：${CHANNEL}"
+    log info "Current channel: ${CHANNEL}"
 }
 
 cmd_exists() {
@@ -167,11 +152,11 @@ first_ipv4() {
 }
 
 setup_locale() {
-    log info "检查并设置 locale 为 C.UTF-8..."
+    log info "Checking and setting locale to C.UTF-8..."
     if locale -a | grep -qi "^C.utf8$\|^C.UTF-8$"; then
-        log info "C.UTF-8 locale 已存在"
+        log info "C.UTF-8 locale already exists"
     else
-        log info "C.UTF-8 locale 不存在，正在生成..."
+        log info "C.UTF-8 locale does not exist, generating..."
         if cmd_exists apt-get; then
             apt-get install -y locales >/dev/null 2>&1 || true
             if ! locale -a | grep -qi "^C.utf8$\|^C.UTF-8$"; then
@@ -189,7 +174,7 @@ setup_locale() {
         elif cmd_exists apk; then
             apk add --no-cache musl-locales >/dev/null 2>&1 || true
         fi
-        log info "locale 生成完成"
+        log info "Locale generation completed"
     fi
 
     export LANG=C.UTF-8
@@ -214,12 +199,12 @@ EOF
         fi
     fi
     
-    log info "locale 已设置为 C.UTF-8"
+    log info "Locale set to C.UTF-8"
 }
 
 require_root() {
     if [[ $EUID -ne 0 ]]; then
-        log error "请使用root权限运行该脚本"
+        log error "Please run this script as root"
         exit 1
     fi
 }
@@ -243,23 +228,23 @@ check_login_shell() {
         return
     fi
 
-    log warn "检测到您可能使用 'su' 而非 'su -' 进入 root 用户"
-    log warn "这可能导致 PATH 环境变量不完整，影响脚本执行"
-    log info "当前 PATH: $PATH"
-    log info "建议使用 'su -' 或 'sudo -i' 获取完整 root 环境"
+    log warn "Detected that you might be using 'su' instead of 'su -' to switch to root"
+    log warn "This may cause an incomplete PATH environment variable, affecting script execution"
+    log info "Current PATH: $PATH"
+    log info "It is recommended to use 'su -' or 'sudo -i' for a complete root environment"
 
     local choice
-    choice=$(read_prompt "是否使用完整登录 shell 重新执行脚本? [Y/n]: " "y")
+    choice=$(read_prompt "Re-execute the script using a full login shell? [Y/n]: " "y")
 
     case "$choice" in
         [nN][oO]|[nN])
-            log warn "用户选择继续当前环境，可能会遇到命令找不到的问题"
+            log warn "User chose to continue with current environment, commands may not be found"
             export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH"
-            log info "已临时添加系统路径到 PATH"
+            log info "Temporarily added system paths to PATH"
             ;;
         *)
-            log info "正在使用完整登录 shell 重新执行脚本..."
-            # 重新执行 bootstrap.sh，让 channel 参数可以被正确解析
+            log info "Re-executing the script using a full login shell..."
+            # Re-execute bootstrap.sh so that channel arguments can be parsed correctly
             exec su - root -c "bash <(curl -fsSL https://raw.githubusercontent.com/charleslkx/one-script/main/bootstrap.sh) --channel=main $*"
             ;;
     esac
@@ -334,7 +319,7 @@ ensure_memory_dependencies() {
     fi
 
     if [[ ${#packages[@]} -gt 0 ]]; then
-        log info "正在安装内存相关依赖: ${packages[*]}"
+        log info "Installing memory-related dependencies: ${packages[*]}"
         eval "$PKG_UPDATE" >/dev/null 2>&1 || true
         eval "$PKG_INSTALL ${packages[*]}" >/dev/null 2>&1 || true
     fi
@@ -375,7 +360,7 @@ get_zram_size_mb() {
 }
 
 print_current_swap_status() {
-    log info "检测到现有 zram 与 swap，输出当前配置："
+    log info "Existing ZRAM and Swap detected, printing current configuration:"
 
     if is_zram_active; then
         local zram_mb zram_algo zram_prio
@@ -384,24 +369,24 @@ print_current_swap_status() {
         if cmd_exists swapon; then
             zram_prio=$(swapon --show --noheadings --output=NAME,PRIO 2>/dev/null | awk '$1=="/dev/zram0"{print $2; exit}')
         fi
-        [[ -n "${zram_mb}" ]] && log info "ZRAM 大小：${zram_mb}MB"
-        [[ -n "${zram_algo}" ]] && log info "ZRAM 压缩算法：${zram_algo}"
-        [[ -n "${zram_prio:-}" ]] && log info "ZRAM 优先级：${zram_prio}"
+        [[ -n "${zram_mb}" ]] && log info "ZRAM Size: ${zram_mb}MB"
+        [[ -n "${zram_algo}" ]] && log info "ZRAM Compression Algorithm: ${zram_algo}"
+        [[ -n "${zram_prio:-}" ]] && log info "ZRAM Priority: ${zram_prio}"
     else
-        log info "ZRAM：未启用"
+        log info "ZRAM: Not enabled"
     fi
 
     if cmd_exists swapon; then
         local swap_list
         swap_list=$(swapon --show --noheadings --output=NAME,TYPE,SIZE,USED,PRIO 2>/dev/null | sed '/^$/d')
         if [[ -n "$swap_list" ]]; then
-            log info "Swap 列表："
+            log info "Swap List:"
             printf "%s\n" "$swap_list"
         else
-            log info "Swap：未启用"
+            log info "Swap: Not enabled"
         fi
     else
-        log info "Swap：无法检测（缺少 swapon）"
+        log info "Swap: Cannot be detected (swapon missing)"
     fi
 }
 
@@ -516,19 +501,19 @@ configure_zram_swap() {
             break
         fi
         retry_count=$((retry_count + 1))
-        log warn "zram 模块加载失败，重试 ${retry_count}/${max_retries}..."
+        log warn "Failed to load ZRAM module, retrying ${retry_count}/${max_retries}..."
         sleep 1
     done
 
     if [[ $retry_count -eq $max_retries ]]; then
-        log warn "加载 zram 模块失败，跳过 zram 配置"
+        log warn "Failed to load ZRAM module after retries, skipping ZRAM configuration"
         return 1
     fi
 
     if systemd_available; then
         if systemctl list-unit-files 2>/dev/null | grep -q "^zramswap.service"; then
             systemctl disable --now zramswap.service >/dev/null 2>&1 || true
-            log warn "检测到 zramswap 服务，已禁用以避免冲突"
+            log warn "Existing zramswap service detected, disabled to avoid conflicts"
         fi
         systemctl stop "$(basename "${ZRAM_SERVICE_FILE}")" >/dev/null 2>&1 || true
     else
@@ -550,16 +535,16 @@ configure_zram_swap() {
 
     if systemd_available; then
         if systemctl is-active --quiet "$(basename "${ZRAM_SERVICE_FILE}")" && is_zram_active; then
-            log info "ZRAM 已启用并设置开机自启"
+            log info "ZRAM is enabled and set to start on boot"
         else
-            log warn "ZRAM 服务启动失败，请检查 systemd 日志"
+            log warn "Failed to start ZRAM service, please check systemd logs"
         fi
     else
         "${ZRAM_SCRIPT_PATH}" start >/dev/null 2>&1 || true
         if is_zram_active; then
-            log info "ZRAM 已启用（当前会话有效）"
+            log info "ZRAM is enabled (effective for current session)"
         else
-            log warn "ZRAM 启动失败"
+            log warn "Failed to start ZRAM"
         fi
     fi
 }
@@ -590,19 +575,19 @@ recommend_hybrid_sizes() {
 
 create_swap_file() {
     local swap_size="$1"
-    log info "正在创建 ${swap_size}MB 的 swap 文件..."
+    log info "Creating a ${swap_size}MB swap file..."
 
     local available_space_mb
     available_space_mb=$(get_disk_available_mb)
     local required_space_mb=$((swap_size + 200))
 
     if [[ $available_space_mb -lt $required_space_mb ]]; then
-        log warn "磁盘空间不足，需要 ${required_space_mb}MB，可用 ${available_space_mb}MB"
+        log warn "Insufficient disk space, need ${required_space_mb}MB, available ${available_space_mb}MB"
         return 1
     fi
 
     if [[ -f /swapfile ]]; then
-        log warn "检测到已存在的 /swapfile，正在移除..."
+        log warn "Detected an existing /swapfile, removing..."
         swapoff /swapfile 2>/dev/null || true
         rm -f /swapfile
     fi
@@ -625,14 +610,14 @@ create_swap_file() {
                     fi
                     apply_memory_tuning "${swappiness}" "${vfs_cache_pressure}"
 
-                    log info "swap 创建并启用成功"
+                    log info "Swap completely created and enabled"
                     return 0
                 fi
             fi
         fi
     fi
 
-    log warn "swap 创建失败"
+    log warn "Swap creation failed"
     swapoff /swapfile 2>/dev/null || true
     rm -f /swapfile "${temp_swapfile}" >/dev/null 2>&1 || true
     return 1
@@ -640,50 +625,41 @@ create_swap_file() {
 
 setup_hybrid_memory() {
     if ! is_debian_family; then
-        log warn "当前系统非 Debian/Ubuntu，跳过混合内存方案"
+        log warn "System is not Debian/Ubuntu, skipping hybrid memory setup"
         return 0
     fi
 
     local has_zram=0
     local has_swap=0
-    local need_zram=0
-    local need_swap=0
+    local has_tuning=0
 
     if is_zram_active; then
         has_zram=1
-        log info "检测到 ZRAM 已启用"
+        log info "ZRAM is active."
     fi
 
     if is_disk_swap_active; then
         has_swap=1
-        log info "检测到 Swap 已启用"
+        log info "Swap is active."
     fi
 
-    if [[ $has_zram -eq 1 && $has_swap -eq 1 ]]; then
+    local current_swappiness
+    current_swappiness=$(sysctl -n vm.swappiness 2>/dev/null || echo "")
+    local current_vfs
+    current_vfs=$(sysctl -n vm.vfs_cache_pressure 2>/dev/null || echo "")
+
+    if [[ "$current_swappiness" == "100" && "$current_vfs" == "50" ]]; then
+        has_tuning=1
+        log info "Memory tuning (swappiness=100, vfs_cache_pressure=50) is active."
+    fi
+
+    if [[ $has_zram -eq 1 && $has_swap -eq 1 && $has_tuning -eq 1 ]]; then
         print_current_swap_status
-        log info "ZRAM 和 Swap 都已配置，跳过混合内存设置"
+        log info "ZRAM, Swap, and memory tuning are fully configured. Skipping setup."
         return 0
     fi
 
-    if [[ $has_zram -eq 0 ]]; then
-        need_zram=1
-        log info "需要配置 ZRAM"
-    fi
-
-    if [[ $has_swap -eq 0 ]]; then
-        need_swap=1
-        log info "需要配置 Swap"
-    fi
-
-    if is_interactive; then
-        local choice
-        choice=$(read_prompt "是否配置混合内存方案 (zram + swap)? [Y/n]: " "Y")
-        if [[ ! "$choice" =~ ^[Yy]$ ]]; then
-            log info "已跳过混合内存方案"
-            return 0
-        fi
-    fi
-
+    log info "Automatically configuring hybrid memory..."
     ensure_memory_dependencies
 
     local memory_mb available_space_mb max_swap_mb
@@ -694,38 +670,44 @@ setup_hybrid_memory() {
         max_swap_mb=0
     fi
 
-    log info "当前内存：${memory_mb}MB"
-    log info "根分区可用空间：${available_space_mb}MB"
+    log info "Current memory: ${memory_mb}MB"
+    log info "Available root partition space: ${available_space_mb}MB"
 
     local rec_zram rec_swap
     read -r rec_zram rec_swap < <(recommend_hybrid_sizes "${memory_mb}")
 
     if [[ $max_swap_mb -lt 128 ]]; then
         rec_swap=0
-        log warn "磁盘空间不足，将仅配置 zram"
+        log warn "Insufficient disk space, only zram will be configured."
     elif [[ $rec_swap -gt $max_swap_mb ]]; then
         rec_swap=$max_swap_mb
-        log warn "根据磁盘空间调整推荐 swap 为 ${rec_swap}MB"
+        log warn "Adjusted recommended swap to ${rec_swap}MB based on disk space."
     fi
 
     local existing_swap
-    existing_swap=$(list_swap_devices | tr '\n' ' ')
+    existing_swap=$(list_swap_devices | tr '
+' ' ')
     if [[ -n "${existing_swap}" ]]; then
-        log warn "检测到已有 swap 设备：${existing_swap}"
+        log warn "Existing swap devices detected: ${existing_swap}"
     fi
 
-    log info "推荐方案：zram ${rec_zram}MB + swap ${rec_swap}MB"
+    log info "Recommended plan: zram ${rec_zram}MB + swap ${rec_swap}MB"
 
-    if [[ $need_zram -eq 1 && $rec_zram -gt 0 ]]; then
+    if [[ $has_zram -eq 0 && $rec_zram -gt 0 ]]; then
         if ! configure_zram_swap "${rec_zram}" "lz4" "100"; then
-            log warn "ZRAM 配置失败，继续后续流程"
+            log warn "ZRAM configuration failed, continuing..."
         fi
     fi
 
-    if [[ $need_swap -eq 1 && $rec_swap -gt 0 ]]; then
+    if [[ $has_swap -eq 0 && $rec_swap -gt 0 ]]; then
         create_swap_file "${rec_swap}" || true
     else
-        log info "未创建新的 swap 文件"
+        log info "Current swap setup maintained."
+    fi
+
+    if [[ $has_tuning -eq 0 ]]; then
+        log info "Applying memory tuning..."
+        apply_memory_tuning "100" "50"
     fi
 }
 
@@ -747,20 +729,20 @@ detect_package_manager() {
         PKG_UPDATE="apk update"
         PKG_EXTRA="iproute2 shadow procps iputils"
     else
-        log error "未找到可用的软件包管理器"
+        log error "No usable package manager found"
         exit 1
     fi
 }
 
 install_dependencies() {
-    log info "安装必要依赖..."
+    log info "Installing essential dependencies..."
     eval "$PKG_UPDATE" >/dev/null 2>&1 || true
     local packages=(curl tar gzip openssl coreutils util-linux $PKG_EXTRA)
     eval "$PKG_INSTALL ${packages[*]}" >/dev/null
 }
 
 ensure_network_stack() {
-    log info "检查网络连通性..."
+    log info "Checking network connectivity..."
 
     local test_urls=("https://1.1.1.1" "https://8.8.8.8" "https://223.5.5.5")
     local network_ok=0
@@ -773,9 +755,9 @@ ensure_network_stack() {
     done
 
     if [[ $network_ok -eq 0 ]]; then
-        log warn "网络连接可能受限，将继续尝试..."
+        log warn "Network connection might be restricted, continuing to try..."
     else
-        log info "网络连接正常"
+        log info "Network connection is normal"
     fi
 
     local ipv4 attempt max_attempts=5
@@ -783,26 +765,26 @@ ensure_network_stack() {
         ipv4=$(first_ipv4 6 || true)
         if [[ -n $ipv4 ]]; then
             PUBLIC_IP="$ipv4"
-            log info "检测到 IPv4 地址：$ipv4"
+            log info "Detected IPv4 address: $ipv4"
             return 0
         fi
-        log warn "第 ${attempt} 次尝试未获取到公网 IPv4，稍后重试..."
+        log warn "Attempt ${attempt}  attempt failed to get public IPv4, retrying later..."
         sleep 3
     done
 
-    log error "连续 ${max_attempts} 次未检测到公网 IPv4 地址"
-    log info "尝试使用本地 IP 作为备选..."
+    log error "Failed to detect public IPv4 address after ${max_attempts} attempts"
+    log info "Attempting to use local IP as fallback..."
 
     local local_ip
     local_ip=$(hostname -I 2>/dev/null | awk '{print $1}' || true)
     if [[ -n $local_ip ]]; then
         PUBLIC_IP="$local_ip"
-        log warn "使用本地 IP 作为公网 IP 备选: $local_ip"
-        log warn "注意：这可能影响客户端连接，请确保服务器有公网 IP"
+        log warn "Using local IP as public IP fallback: $local_ip"
+        log warn "Warning: This might affect client connections. Ensure the server has a public IP"
         return 0
     fi
 
-    log error "无法获取任何可用的 IP 地址，请检查网络配置"
+    log error "Failed to get any usable IP address, please check network configuration"
     exit 1
 }
 
@@ -810,11 +792,11 @@ ensure_network_stack() {
 enable_bbr() {
     if sysctl net.ipv4.tcp_congestion_control | grep -q bbr && \
        sysctl net.core.default_qdisc | grep -q fq; then
-        log info "BBR+FQ 已启用"
+        log info "BBR+FQ is already enabled"
         return
     fi
 
-    log info "正在启用 BBR+FQ..."
+    log info "Enabling BBR+FQ..."
 
     if ! lsmod | grep -q tcp_bbr; then
         modprobe tcp_bbr >/dev/null 2>&1 || true
@@ -827,14 +809,14 @@ EOF
     sysctl --system >/dev/null 2>&1
 
     if sysctl net.ipv4.tcp_congestion_control | grep -q bbr; then
-        log info "BBR启动成功"
+        log info "BBR enabled successfully"
     else
-        log warn "BBR启动失败，您的内核可能太旧。建议升级内核。"
+        log warn "Failed to enable BBR, your kernel might be too old. Consider upgrading."
     fi
 }
 
 setup_cron_restart() {
-    log info "配置每日定时重启任务 (UTC+8 5:00)..."
+    log info "Configuring daily restart cron job (UTC+8 5:00)..."
     
     local cron_cmd="systemctl restart sing-box"
     local cron_file="/var/spool/cron/crontabs/root"
@@ -852,13 +834,13 @@ setup_cron_restart() {
         current_cron=$(crontab -l 2>/dev/null || true)
         
         if echo "$current_cron" | grep -q "$cron_cmd"; then
-            log info "重启任务已存在，跳过"
+            log info "Restart cron job already exists, skipping"
         else
             (echo "$current_cron"; echo "$cron_job") | crontab -
-            log info "已添加定时任务: $cron_job"
+            log info "Added cron job: $cron_job"
         fi
     else
-        log warn "未找到 crontab，跳过定时任务设置"
+        log warn "crontab not found, skipping cron job setup"
     fi
 }
 
@@ -867,7 +849,7 @@ check_existing_installation() {
     local pub_key_file="/etc/sing-box/public.key"
     
     if [[ -f "$config" ]]; then
-        log warn "检测到已安装 sing-box 服务"
+        log warn "Detected existing sing-box service installation"
 
         local config_content
         config_content=$(tr -d '[:space:]' < "$config")
@@ -887,31 +869,31 @@ check_existing_installation() {
         
         server_ip=$(get_public_ip)
         
-        log info "当前配置信息:"
-        log info "端口: $port"
+        log info "Current configuration details:"
+        log info "Port: $port"
         log info "UUID: $uuid"
         log info "SNI: $sni"
-        log info "配置路径: $config"
+        log info "Config path: $config"
         
         if [[ -f "$pub_key_file" ]]; then
             local pbk
             pbk=$(cat "$pub_key_file")
             local link="vless://${uuid}@${server_ip}:${port}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${sni}&fp=chrome&type=tcp&headerType=none&alpn=h2&pbk=${pbk}&sid=${short_id}&dest=${sni}%3A443#singbox-existing"
-            log info "当前链接: $link"
+            log info "Current link: $link"
         else
-            log warn "当前链接: 无法完全重建 (缺少公钥文件)"
+            log warn "Current link: Cannot completely reconstruct (missing public key file)"
         fi
 
         local choice
-        choice=$(read_prompt "是否重新安装? [y/N]: " "n")
+        choice=$(read_prompt "Do you want to reinstall? [y/N]: " "n")
         
         case "$choice" in
             [yY][eE][sS]|[yY])
-                log info "用户选择重新安装，正在清理旧服务..."
+                log info "User chose to reinstall, cleaning up old service..."
                 remove_singbox
                 ;;
             *)
-                log info "用户取消安装或未检测到输入，脚本退出"
+                log info "User cancelled installation or no input detected, scripting exiting"
                 exit 0
                 ;;
         esac
@@ -923,7 +905,7 @@ detect_arch() {
     case "$(uname -m)" in
         x86_64|amd64) ARCH="amd64" ;;
         aarch64|arm64) ARCH="arm64" ;;
-        *) log error "当前架构 $(uname -m) 暂不支持" ; exit 1 ;;
+        *) log error "Current architecture $(uname -m) is not supported" ; exit 1 ;;
     esac
 }
 
@@ -937,12 +919,12 @@ fetch_latest_singbox() {
             break
         fi
         retry_count=$((retry_count + 1))
-        log warn "获取 sing-box 版本信息失败，重试 ${retry_count}/${max_retries}..."
+        log warn "Failed to fetch sing-box version info, retrying ${retry_count}/${max_retries}..."
         sleep 3
     done
 
     if [[ -z $tag ]]; then
-        log error "无法获取 sing-box 最新版本信息，请检查网络连接"
+        log error "Failed to fetch the latest sing-box version info, please check network connection"
         exit 1
     fi
 
@@ -956,13 +938,13 @@ install_singbox() {
     if command -v sing-box >/dev/null 2>&1; then
         local installed_version
         installed_version=$(sing-box version 2>/dev/null | head -n1 | grep -oP 'sing-box version \K[^ ]+' || echo "unknown")
-        log info "检测到已安装 sing-box ${installed_version}，跳过下载"
+        log info "Detected existing sing-box ${installed_version}, skipping download"
         return 0
     fi
 
     detect_arch
     fetch_latest_singbox
-    log info "下载并安装 sing-box ${SINGBOX_TAG}"
+    log info "Downloading and installing sing-box ${SINGBOX_TAG}"
 
     local tmpdir
     tmpdir=$(mktemp -d)
@@ -980,39 +962,39 @@ install_singbox() {
             fi
         fi
         retry_count=$((retry_count + 1))
-        log warn "下载 sing-box 失败，重试 ${retry_count}/${max_retries}..."
+        log warn "Failed to download sing-box, retrying ${retry_count}/${max_retries}..."
         sleep 5
     done
 
     if [[ $download_success -eq 0 ]]; then
-        log error "下载 sing-box 失败，请检查网络连接"
+        log error "Failed to download sing-box, please check network connection"
         exit 1
     fi
 
     if ! tar -tf "$tmpdir/sing-box.tar.gz" >/dev/null 2>&1; then
-        log error "下载的 sing-box 压缩包损坏"
+        log error "Downloaded sing-box archive is corrupted"
         exit 1
     fi
 
     if ! tar -xf "$tmpdir/sing-box.tar.gz" -C "$tmpdir" 2>/dev/null; then
-        log error "解压 sing-box 失败"
+        log error "Failed to extract sing-box"
         exit 1
     fi
 
     local extracted
     extracted=$(find "$tmpdir" -maxdepth 1 -type d -name "sing-box*" | head -n 1)
     if [[ -z $extracted ]] || [[ ! -f "${extracted}/sing-box" ]]; then
-        log error "解压后的 sing-box 可执行文件不存在"
+        log error "Extracted sing-box executable does not exist"
         exit 1
     fi
 
     install -Dm755 "${extracted}/sing-box" /usr/local/bin/sing-box || {
-        log error "安装 sing-box 到 /usr/local/bin 失败"
+        log error "Failed to install sing-box to /usr/local/bin"
         exit 1
     }
 
     if [[ ! -x /usr/local/bin/sing-box ]]; then
-        log error "sing-box 安装后无法执行"
+        log error "sing-box executable cannot be run after installation"
         exit 1
     fi
 
@@ -1027,7 +1009,7 @@ install_singbox() {
 
     rm -rf "$tmpdir" 2>/dev/null || true
 
-    log info "sing-box ${SINGBOX_TAG} 安装成功"
+    log info "sing-box ${SINGBOX_TAG} installed successfully"
 }
 
 ensure_system_user() {
@@ -1037,7 +1019,7 @@ ensure_system_user() {
 }
 
 remove_singbox() {
-    log info "开始卸载 sing-box..."
+    log info "Starting to uninstall sing-box..."
     if command -v systemctl >/dev/null 2>&1; then
         if systemctl list-unit-files | grep -q "^sing-box.service"; then
             systemctl stop sing-box.service >/dev/null 2>&1 || true
@@ -1046,7 +1028,7 @@ remove_singbox() {
         rm -f /etc/systemd/system/sing-box.service
         systemctl daemon-reload >/dev/null 2>&1 || true
     else
-        log warn "未检测到systemd，跳过服务停止"
+        log warn "systemd not detected, skipping service removal"
     fi
     rm -rf /etc/sing-box
     rm -f /usr/local/bin/sing-box
@@ -1058,52 +1040,52 @@ remove_singbox() {
         fi
         userdel -r sing-box >/dev/null 2>&1 || userdel sing-box >/dev/null 2>&1 || true
     fi
-    log info "卸载 sing-box 完成"
+    log info "sing-box uninstallation completed"
 }
 
 debug_singbox() {
-    log info "开始收集调试信息"
+    log info "Starting to collect debug information"
     if command -v sing-box >/dev/null 2>&1; then
-        log info "sing-box 版本：$(sing-box version 2>/dev/null | head -n 1)"
+        log info "sing-box version: $(sing-box version 2>/dev/null | head -n 1)"
     else
-        log warn "未检测到 sing-box 可执行文件"
+        log warn "sing-box executable not found"
     fi
     if [[ -f /etc/sing-box/config.json ]]; then
-        log info "配置文件存在：/etc/sing-box/config.json"
+        log info "Config file exists: /etc/sing-box/config.json"
         local port
         port=$(grep -oE '"listen_port"[[:space:]]*:[[:space:]]*[0-9]+' /etc/sing-box/config.json 2>/dev/null | head -n 1 | grep -oE '[0-9]+')
         if [[ -n $port ]]; then
-            log info "监听端口：${port}"
+            log info "Listen port: ${port}"
         fi
     else
-        log warn "未找到 sing-box 配置文件"
+        log warn "sing-box config file not found"
     fi
     if command -v systemctl >/dev/null 2>&1; then
         if systemctl list-unit-files | grep -q "^sing-box.service"; then
             local state
             state=$(systemctl is-active sing-box.service 2>/dev/null || echo "unknown")
-            log info "systemd 服务状态：${state}"
+            log info "systemd service status: ${state}"
             if command -v journalctl >/dev/null 2>&1; then
-                log info "最近 20 行日志："
-                journalctl -u sing-box --no-pager -n 20 2>/dev/null || log warn "暂无日志"
+                log info "Last 20 lines of log:"
+                journalctl -u sing-box --no-pager -n 20 2>/dev/null || log warn "No log available"
             else
-                log warn "无法获取日志：未找到 journalctl"
+                log warn "Cannot fetch log: journalctl not found"
             fi
         else
-            log warn "systemd 中未注册 sing-box.service"
+            log warn "sing-box.service not registered in systemd"
         fi
     else
-        log warn "未检测到systemd环境"
+        log warn "systemd environment not detected"
     fi
     if command -v ss >/dev/null 2>&1; then
-        log info "当前监听端口："
+        log info "Current Listen port: "
         if ss -ltnp | grep -q sing-box; then
             ss -ltnp | grep sing-box
         else
-            log warn "未检测到 sing-box 监听端口"
+            log warn "No sing-box listening ports detected"
         fi
     fi
-    log info "调试信息收集完成"
+    log info "Debug information collection completed"
 }
 
 generate_port() {
@@ -1115,7 +1097,7 @@ generate_port() {
             printf "%s" "$requested_port"
             return
         fi
-        log warn "VISION_PORT=${requested_port} 非法，改用自动端口"
+        log warn "VISION_PORT=${requested_port} is invalid, falling back to random port"
     fi
 
     if command -v ss >/dev/null 2>&1; then
@@ -1124,7 +1106,7 @@ generate_port() {
         has_ss=0
     fi
 
-    # 优先尝试常见放行端口，降低云服务商安全组阻断概率
+    # Prefer commonly allowed ports to reduce the probability of cloud provider security group blocking
     for preferred in 443 8443 2053; do
         if [[ $has_ss -eq 0 ]] || ! ss -ltn 2>/dev/null | awk '{print $4}' | tr -d '[]' | awk -F':' '{print $NF}' | grep -qw "$preferred"; then
             printf "%s" "$preferred"
@@ -1156,7 +1138,7 @@ generate_reality_keys() {
     PRIVATE_KEY=$(printf "%s\n" "$output" | grep -i "PrivateKey" | awk '{print $2}')
     PUBLIC_KEY=$(printf "%s\n" "$output" | grep -i "PublicKey" | awk '{print $2}')
     if [[ -z $PRIVATE_KEY || -z $PUBLIC_KEY ]]; then
-        log error "Reality密钥生成失败"
+        log error "Reality keypair generation failed"
         exit 1
     fi
 }
@@ -1185,12 +1167,15 @@ create_config() {
         local menu_lines=()
         for i in "${!prefill_servers[@]}"; do
             local marker=""
-            [[ "${prefill_servers[$i]}" == "$default_server" ]] && marker=" (默认)"
+            [[ "${prefill_servers[$i]}" == "$default_server" ]] && marker=" (Default)"
             menu_lines+=("$((i + 1))) ${prefill_servers[$i]}${marker}")
         done
-        menu_lines+=("c) 自定义 SNI")
-        print_box "SNI (Server Name Indication)" "${menu_lines[@]}"
-        printf "%b选择 [1-%d/c]，%d秒后默认 '%s': %b" "$C_YELLOW" "${#prefill_servers[@]}" "$timeout_sec" "$default_server" "$C_RESET" >&2
+        menu_lines+=("c) Custom SNI")
+        log info "$title"
+        for line in "${lines[@]}"; do
+            log info "  $line"
+        done
+        printf "%bSelect [1-%d/c], default '%s' in %d seconds: %b" "$C_YELLOW" "${#prefill_servers[@]}" "$default_server" "$timeout_sec" "$C_RESET" >&2
 
         if read -r -t "$timeout_sec" choice; then
             case "$choice" in
@@ -1198,21 +1183,21 @@ create_config() {
                     server_name="${prefill_servers[$((choice-1))]}"
                     ;;
                 c|C)
-                    custom_sni=$(read_prompt "请输入自定义 SNI: " "")
+                    custom_sni=$(read_prompt "Please enter custom SNI: " "")
                     if [[ -n "$custom_sni" ]]; then
                         server_name="$custom_sni"
                     else
-                        log warn "自定义 SNI 为空，使用默认值: $default_server"
+                        log warn "Custom SNI is empty, using default: $default_server"
                         server_name="$default_server"
                     fi
                     ;;
                 *)
-                    log warn "无效选项，使用默认值: $default_server"
+                    log warn "Invalid option, using default: $default_server"
                     server_name="$default_server"
                     ;;
             esac
         else
-            log warn "超时未选择，使用默认值: $default_server"
+            log warn "Timeout, using default: $default_server"
             server_name="$default_server"
         fi
     else
@@ -1224,22 +1209,22 @@ create_config() {
     if [[ -d "$config_dir" ]]; then
         local backup_dir="${config_dir}.backup.$(date +%Y%m%d_%H%M%S)"
         if cp -r "$config_dir" "$backup_dir" 2>/dev/null; then
-            log info "已备份旧配置到 ${backup_dir}"
+            log info "Backed up old config to ${backup_dir}"
         fi
     fi
 
     install -d -m 750 "$config_dir" || {
-        log error "无法创建配置目录 ${config_dir}"
+        log error "Failed to create config directory ${config_dir}"
         exit 1
     }
 
     echo "$PUBLIC_KEY" > "${config_dir}/public.key" || {
-        log error "无法写入公钥文件"
+        log error "Failed to write public key file"
         exit 1
     }
     chmod 644 "${config_dir}/public.key"
 
-    # 兼容 install.sh 的 reality_key 读取方式
+    # Compatible with the interpretation of reality_key in install.sh
     cat > "${config_dir}/reality_key" <<EOF
 privateKey:${PRIVATE_KEY}
 publicKey:${PUBLIC_KEY}
@@ -1305,7 +1290,7 @@ EOF
 
 create_service() {
     if ! command -v systemctl >/dev/null 2>&1; then
-        log warn "未检测到systemd环境，请手动管理 sing-box 进程"
+        log warn "systemd environment not detected, please manage sing-box process manually"
         return 1
     fi
 
@@ -1344,27 +1329,27 @@ EOF
 
     if command -v sing-box >/dev/null 2>&1; then
         if ! sing-box check -c /etc/sing-box/config.json >/dev/null 2>&1; then
-            log error "sing-box 配置校验失败，请检查 /etc/sing-box/config.json"
+            log error "sing-box config validation failed, please check /etc/sing-box/config.json"
             sing-box check -c /etc/sing-box/config.json 2>&1 || true
             return 1
         fi
     fi
 
     if ! systemctl daemon-reload 2>/dev/null; then
-        log warn "systemd daemon-reload 失败"
+        log warn "systemd daemon-reload failed"
     fi
 
     if systemctl enable --now sing-box.service 2>/dev/null; then
         sleep 2
         if systemctl is-active --quiet sing-box.service 2>/dev/null; then
-            log info "sing-box 服务已启动并启用自启"
+            log info "sing-box service started and enabled on boot"
         else
-            log error "sing-box 服务已启用但启动失败，请检查日志: journalctl -u sing-box -n 50 --no-pager"
+            log error "sing-box service enabled but failed to start, check logs: journalctl -u sing-box -n 50 --no-pager"
             journalctl -u sing-box -n 50 --no-pager 2>/dev/null || true
             return 1
         fi
     else
-        log error "sing-box 服务启用失败"
+        log error "sing-box service failed to enable"
         return 1
     fi
 }
@@ -1394,84 +1379,80 @@ print_summary() {
     vless_url="vless://${CLIENT_UUID}@${host_part}:${LISTEN_PORT}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${SERVER_NAME}&fp=chrome&type=tcp&headerType=none&alpn=h2&pbk=${PUBLIC_KEY}&sid=${SHORT_ID}&dest=${SERVER_NAME}%3A443#${alias}"
     
     printf "\n"
-    printf "%b┌─ %b🎉 部署完成 (Deployment Success)%b\n" "$C_GREEN" "$C_WHITE" "$C_RESET"
-    printf "%b│%b\n" "$C_GREEN" "$C_RESET"
+    printf "%b=== %b🎉 Deployment Success%b ===\n" "$C_GREEN" "$C_WHITE" "$C_RESET"
     
-    printf "%b│  %b监听端口%b   : %b%s%b\n" "$C_GREEN" "$C_CYAN" "$C_RESET" "$C_WHITE" "$LISTEN_PORT" "$C_RESET"
-    printf "%b│  %b客户端UUID%b : %b%s%b\n" "$C_GREEN" "$C_CYAN" "$C_RESET" "$C_WHITE" "$CLIENT_UUID" "$C_RESET"
-    printf "%b│  %bReality公钥%b: %b%s%b\n" "$C_GREEN" "$C_CYAN" "$C_RESET" "$C_WHITE" "$PUBLIC_KEY" "$C_RESET"
-    printf "%b│  %bReality短ID%b: %b%s%b\n" "$C_GREEN" "$C_CYAN" "$C_RESET" "$C_WHITE" "$SHORT_ID" "$C_RESET"
-    printf "%b│  %bSNI/回落%b   : %b%s%b\n" "$C_GREEN" "$C_CYAN" "$C_RESET" "$C_WHITE" "$SERVER_NAME" "$C_RESET"
-    printf "%b│  %b服务器IP%b   : %b%s%b\n" "$C_GREEN" "$C_CYAN" "$C_RESET" "$C_WHITE" "$ip" "$C_RESET"
+    printf " %bListen Port%b   : %b%s%b\n" "$C_GREEN" "$C_RESET" "$C_WHITE" "$LISTEN_PORT" "$C_RESET"
+    printf " %bClient UUID%b : %b%s%b\n" "$C_GREEN" "$C_RESET" "$C_WHITE" "$CLIENT_UUID" "$C_RESET"
+    printf " %bReality Public Key%b: %b%s%b\n" "$C_GREEN" "$C_RESET" "$C_WHITE" "$PUBLIC_KEY" "$C_RESET"
+    printf " %bReality Short ID%b: %b%s%b\n" "$C_GREEN" "$C_RESET" "$C_WHITE" "$SHORT_ID" "$C_RESET"
+    printf " %bSNI / Fallback%b   : %b%s%b\n" "$C_GREEN" "$C_RESET" "$C_WHITE" "$SERVER_NAME" "$C_RESET"
+    printf " %bServer IP%b   : %b%s%b\n" "$C_GREEN" "$C_RESET" "$C_WHITE" "$ip" "$C_RESET"
     
-    printf "%b│%b\n" "$C_GREEN" "$C_RESET"
-    printf "%b│  %bVLESS 链接分享:%b\n" "$C_GREEN" "$C_CYAN" "$C_RESET"
-    printf "%b│  %b%s%b\n" "$C_GREEN" "$C_YELLOW" "$vless_url" "$C_RESET"
-    printf "%b│%b\n" "$C_GREEN" "$C_RESET"
-    printf "%b└─────────────────────────────────────────────────────────────%b\n\n" "$C_GREEN" "$C_RESET"
+    printf "\n"
+    printf " %bVLESS Link Share:%b\n" "$C_GREEN" "$C_RESET"
+    printf " %b%s%b\n" "$C_YELLOW" "$vless_url" "$C_RESET"
+    printf "\n"
 }
 
 install_workflow() {
     local step=0
     local total_steps=13
 
-    printf "\n%b==============================================================%b\n" "$C_PURPLE" "$C_RESET"
-    printf "%b               🚀 开始安装 Quick-Script 环境%b\n" "$C_CYAN" "$C_RESET"
-    printf "%b==============================================================%b\n\n" "$C_PURPLE" "$C_RESET"
+    printf "\n%b=== %b🚀 Starting Quick-Script Environment Installation%b ===\n\n" "$C_PURPLE" "$C_CYAN" "$C_RESET"
 
-    log info "开始安装流程..."
+    log info "Starting installation workflow..."
 
     step=$((step + 1))
-    log info "[$step/$total_steps] 检查现有安装..."
-    check_existing_installation || { log error "检查现有安装失败"; exit 1; }
+    log info "[$step/$total_steps] Checking existing installation..."
+    check_existing_installation || { log error "Failed to check existing installation"; exit 1; }
 
     step=$((step + 1))
-    log info "[$step/$total_steps] 检测包管理器..."
-    detect_package_manager || { log error "检测包管理器失败"; exit 1; }
+    log info "[$step/$total_steps] Detecting package manager..."
+    detect_package_manager || { log error "Failed to detect package manager"; exit 1; }
 
     step=$((step + 1))
-    log info "[$step/$total_steps] 设置 locale..."
-    setup_locale || log warn "设置 locale 部分失败，继续..."
+    log info "[$step/$total_steps] Setting locale..."
+    setup_locale || log warn "Failed to set locale, continuing..."
 
     step=$((step + 1))
-    log info "[$step/$total_steps] 安装依赖..."
-    install_dependencies || { log error "安装依赖失败"; exit 1; }
+    log info "[$step/$total_steps] Installing dependencies..."
+    install_dependencies || { log error "Failed to install dependencies"; exit 1; }
 
     step=$((step + 1))
-    log info "[$step/$total_steps] 检测系统版本..."
-    detect_release || log warn "检测系统版本失败，继续..."
+    log info "[$step/$total_steps] Detecting OS release..."
+    detect_release || log warn "Failed to detect OS release, continuing..."
 
     step=$((step + 1))
-    log info "[$step/$total_steps] 设置混合内存..."
-    setup_hybrid_memory || log warn "设置混合内存部分失败，继续..."
+    log info "[$step/$total_steps] Setting up hybrid memory..."
+    setup_hybrid_memory || log warn "Failed to set up hybrid memory, continuing..."
 
     step=$((step + 1))
-    log info "[$step/$total_steps] 检查网络..."
-    ensure_network_stack || { log error "网络检查失败"; exit 1; }
+    log info "[$step/$total_steps] Checking network connectivity..."
+    ensure_network_stack || { log error "Network check failed"; exit 1; }
 
     step=$((step + 1))
-    log info "[$step/$total_steps] 启用 BBR..."
-    enable_bbr || log warn "启用 BBR 失败，继续..."
+    log info "[$step/$total_steps] Enabling BBR+FQ..."
+    enable_bbr || log warn "Failed to enable BBR, continuing..."
 
     step=$((step + 1))
-    log info "[$step/$total_steps] 安装 sing-box..."
-    install_singbox || { log error "安装 sing-box 失败"; exit 1; }
+    log info "[$step/$total_steps] Installing sing-box..."
+    install_singbox || { log error "Failed to install sing-box"; exit 1; }
 
     step=$((step + 1))
-    log info "[$step/$total_steps] 创建系统用户..."
-    ensure_system_user || { log error "创建系统用户失败"; exit 1; }
+    log info "[$step/$total_steps] Ensuring system user..."
+    ensure_system_user || { log error "Failed to create system user"; exit 1; }
 
     step=$((step + 1))
-    log info "[$step/$total_steps] 创建配置文件..."
-    create_config || { log error "创建配置文件失败"; exit 1; }
+    log info "[$step/$total_steps] Creating configuration files..."
+    create_config || { log error "Failed to create configuration"; exit 1; }
 
     step=$((step + 1))
-    log info "[$step/$total_steps] 创建系统服务..."
-    create_service || { log error "创建系统服务失败"; exit 1; }
+    log info "[$step/$total_steps] Creating systemd service..."
+    create_service || { log error "Failed to create system service"; exit 1; }
 
     step=$((step + 1))
-    log info "[$step/$total_steps] 设置定时任务..."
-    setup_cron_restart || log warn "设置定时任务失败，继续..."
+    log info "[$step/$total_steps] Setting up cron tasks..."
+    setup_cron_restart || log warn "Failed to set up cron task, continuing..."
 
     print_summary
 }
@@ -1497,8 +1478,8 @@ main() {
             debug_singbox
             ;;
         *)
-            log error "未知操作：$action"
-            log info "支持命令：install（默认）、uninstall、reinstall、debug"
+            log error "Unknown action: $action"
+            log info "Supported commands: install (default), uninstall, reinstall, debug"
             exit 1
             ;;
     esac
