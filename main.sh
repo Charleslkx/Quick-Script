@@ -1173,8 +1173,8 @@ create_config() {
             menu_lines+=("$((i + 1))) ${prefill_servers[$i]}${marker}")
         done
         menu_lines+=("c) Custom SNI")
-        log info "$title"
-        for line in "${lines[@]}"; do
+        log info "Select an SNI server for VLESS Reality:"
+        for line in "${menu_lines[@]}"; do
             log info "  $line"
         done
         printf "%bSelect [1-%d/c], default '%s' in %d seconds: %b" "$C_YELLOW" "${#prefill_servers[@]}" "$default_server" "$timeout_sec" "$C_RESET" >&2

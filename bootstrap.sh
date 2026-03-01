@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# One-Script 稳定入口脚本
-# 本脚本负责解析参数并从远程拉取 main.sh 执行
+# Quick-Script bootstrap entry point
+# This script parses arguments and fetches main.sh from the remote repository to execute
 
 set -euo pipefail
 
-# 日志输出
+# Logging
 log() {
     local level="$1"
     shift
@@ -81,15 +81,15 @@ run_remote_script() {
     local temp_script
     local download_success=0
 
-    log "info" "远程脚本 URL: ${script_url}"
+    log "info" "Remote script URL: ${script_url}"
 
     temp_script=$(mktemp -t quick-script.XXXXXX)
     if [[ -z "$temp_script" ]] || [[ ! -f "$temp_script" ]]; then
-        log "error" "创建临时文件失败"
+        log "error" "Failed to create temporary file"
         return 1
     fi
 
-    log "info" "下载远程脚本到临时文件..."
+    log "info" "Downloading remote script to temporary file..."
 
     if command -v curl >/dev/null 2>&1; then
         if curl -fsSL --max-time 60 "${script_url}" -o "${temp_script}" 2>/dev/null; then
@@ -104,24 +104,24 @@ run_remote_script() {
             fi
         fi
     else
-        log "error" "未找到 wget 或 curl 工具，无法下载远程脚本"
+        log "error" "Neither wget nor curl found, cannot download remote script"
         rm -f "${temp_script}" 2>/dev/null || true
         return 1
     fi
 
     if [[ ${download_success} -eq 0 ]]; then
-        log "error" "下载远程脚本失败，请检查网络连接或 URL 是否正确"
+        log "error" "Failed to download remote script, please check network connection or URL"
         rm -f "${temp_script}" 2>/dev/null || true
         return 1
     fi
 
     if ! bash -n "${temp_script}" 2>/dev/null; then
-        log "error" "下载的脚本存在语法错误，可能网络传输异常"
+        log "error" "Downloaded script has syntax errors, possibly due to a network transmission issue"
         rm -f "${temp_script}" 2>/dev/null || true
         return 1
     fi
 
-    log "info" "脚本下载成功，开始执行..."
+    log "info" "Script downloaded successfully, starting execution..."
 
     local script_exit_code=0
     ONE_SCRIPT_CHANNEL="${CHANNEL}" ONE_SCRIPT_BASE_URL="${BASE_URL}" \
@@ -130,7 +130,7 @@ run_remote_script() {
     rm -f "${temp_script}" 2>/dev/null || true
 
     if [[ ${script_exit_code} -ne 0 ]]; then
-        log "error" "远程脚本执行失败 (退出码: ${script_exit_code})"
+        log "error" "Remote script execution failed (exit code: ${script_exit_code})"
         return 1
     fi
 
@@ -142,7 +142,7 @@ main() {
     run_remote_script
 }
 
-# 如果直接执行（非被 source），则运行 main
+# Run main only if executed directly (not sourced)
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
     main "$@"
 fi
