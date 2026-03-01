@@ -26,7 +26,23 @@ I_ARROW="${C_CYAN}[➜]${C_RESET}"
 CHANNEL="main"
 DISTRO="unknown"
 
+LOG_FILE="/var/log/quick-script/install.log"
 SCRIPT_TEMP_FILES=()
+
+init_log() {
+    local log_dir
+    log_dir=$(dirname "$LOG_FILE")
+    mkdir -p "$log_dir" 2>/dev/null || { LOG_FILE="/tmp/quick-script-install.log"; }
+    {
+        printf '\n%s\n' "$(printf '=%.0s' {1..60})"
+        printf '[%s] Installation started | channel=%s | pid=%s\n' \
+            "$(date '+%Y-%m-%d %H:%M:%S')" "${CHANNEL}" "$$"
+        if [[ -f /etc/os-release ]]; then
+            printf '[%s] OS: %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" \
+                "$(. /etc/os-release 2>/dev/null && echo "${PRETTY_NAME:-unknown}")"
+        fi
+    } >> "$LOG_FILE" 2>/dev/null || true
+}
 
 cleanup_temp_files() {
     local file
@@ -40,6 +56,10 @@ cleanup_temp_files() {
 cleanup() {
     local exit_code=$?
     cleanup_temp_files
+    if [[ $exit_code -ne 0 && -n "${LOG_FILE:-}" ]]; then
+        printf '[%s] [FAILED] Script exited with code %s\n' \
+            "$(date '+%Y-%m-%d %H:%M:%S')" "$exit_code" >> "$LOG_FILE" 2>/dev/null || true
+    fi
     exit $exit_code
 }
 
@@ -54,7 +74,7 @@ log() {
     local message="$*"
     local timestamp color icon
     timestamp="${C_GRAY}$(date '+%H:%M:%S')${C_RESET}"
-    
+
     case "$level" in
         info)
             local lower_msg
@@ -86,8 +106,13 @@ log() {
             color="${C_RESET}"
             ;;
     esac
-    
+
     printf "%b %b %b%s%b\n" "$timestamp" "$icon" "$color" "$message" "$C_RESET" >&2
+
+    # Mirror plain-text output to log file (no ANSI codes)
+    if [[ -n "${LOG_FILE:-}" ]]; then
+        printf '[%s] [%-5s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "${level^^}" "$message" >> "$LOG_FILE" 2>/dev/null || true
+    fi
 }
 
 
@@ -247,7 +272,7 @@ check_login_shell() {
         *)
             log info "Re-executing the script using a full login shell..."
             # Re-execute bootstrap.sh so that channel arguments can be parsed correctly
-            exec su - root -c "bash <(curl -fsSL https://raw.githubusercontent.com/charleslkx/one-script/main/bootstrap.sh) --channel=main $*"
+            exec su - root -c "bash <(curl -fsSL https://raw.githubusercontent.com/charleslkx/quick-script/main/bootstrap.sh) --channel=main $*"
             ;;
     esac
 }
@@ -916,7 +941,7 @@ fetch_latest_singbox() {
     local tag max_retries=3 retry_count=0
 
     while [[ $retry_count -lt $max_retries ]]; do
-        tag=$(curl -s --max-time 30 "$api_url" 2>/dev/null | grep -oP '"tag_name":\s*"\K[^"]+' || true)
+        tag=$(curl -s --max-time 30 "$api_url" 2>/dev/null | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1 || true)
         if [[ -n $tag ]]; then
             break
         fi
@@ -1369,10 +1394,44 @@ get_public_ip() {
     printf "%s" "$ip"
 }
 
+get_country_name() {
+    local ip="${1:-}"
+    local country=""
+
+    if [[ -z "$ip" ]]; then
+        return 1
+    fi
+
+    # Try ip-api.com (no key required, returns country name)
+    country=$(curl -4 -sf --max-time 5 "http://ip-api.com/json/${ip}?fields=country" 2>/dev/null \
+        | sed -n 's/.*"country":"\([^"]*\)".*/\1/p')
+
+    if [[ -z "$country" ]]; then
+        # Fallback: ipinfo.io
+        country=$(curl -4 -sf --max-time 5 "https://ipinfo.io/${ip}/country" 2>/dev/null | tr -d '[:space:]')
+        # ipinfo.io returns ISO code (e.g. AU), try to keep it if non-empty
+    fi
+
+    if [[ -n "$country" ]]; then
+        # Replace spaces with hyphens for URL safety
+        printf "%s" "${country// /-}"
+        return 0
+    fi
+
+    return 1
+}
+
+
 print_summary() {
-    local ip alias vless_url host_part
+    local ip alias vless_url host_part country
     ip=$(get_public_ip)
-    alias="singbox-reality"
+    # Try to detect server country for a friendly alias label
+    country=$(get_country_name "$ip" 2>/dev/null || true)
+    if [[ -n "$country" ]]; then
+        alias="${country}-singbox-reality"
+    else
+        alias="singbox-reality"
+    fi
     if [[ $ip == *:* ]]; then
         host_part="[${ip}]"
     else
@@ -1388,11 +1447,18 @@ print_summary() {
     printf " %bReality Public Key%b: %b%s%b\n" "$C_GREEN" "$C_RESET" "$C_WHITE" "$PUBLIC_KEY" "$C_RESET"
     printf " %bReality Short ID%b: %b%s%b\n" "$C_GREEN" "$C_RESET" "$C_WHITE" "$SHORT_ID" "$C_RESET"
     printf " %bSNI / Fallback%b   : %b%s%b\n" "$C_GREEN" "$C_RESET" "$C_WHITE" "$SERVER_NAME" "$C_RESET"
-    printf " %bServer IP%b   : %b%s%b\n" "$C_GREEN" "$C_RESET" "$C_WHITE" "$ip" "$C_RESET"
-    
+    printf " %bServer IP%b       : %b%s%b\n" "$C_GREEN" "$C_RESET" "$C_WHITE" "$ip" "$C_RESET"
+
     printf "\n"
     printf " %bVLESS Link Share:%b\n" "$C_GREEN" "$C_RESET"
     printf " %b%s%b\n" "$C_YELLOW" "$vless_url" "$C_RESET"
+
+    printf "\n"
+    printf " %bConfiguration Paths:%b\n" "$C_GREEN" "$C_RESET"
+    printf "   Config   : %b%s%b\n" "$C_WHITE" "/etc/sing-box/config.json" "$C_RESET"
+    printf "   Keys     : %b%s%b\n" "$C_WHITE" "/etc/sing-box/reality_key" "$C_RESET"
+    printf "   Service  : %b%s%b\n" "$C_WHITE" "/etc/systemd/system/sing-box.service" "$C_RESET"
+    printf "   Log file : %b%s%b\n" "$C_WHITE" "${LOG_FILE}" "$C_RESET"
     printf "\n"
 }
 
@@ -1400,7 +1466,11 @@ install_workflow() {
     local step=0
     local total_steps=13
 
+    # Initialise log file before any log() calls so everything is captured
+    init_log
+
     printf "\n%b=== %b🚀 Starting Quick-Script Environment Installation%b ===\n\n" "$C_PURPLE" "$C_CYAN" "$C_RESET"
+    printf " %bInstall log:%b %s\n\n" "$C_GRAY" "$C_RESET" "$LOG_FILE"
 
     log info "Starting installation workflow..."
 
@@ -1457,6 +1527,10 @@ install_workflow() {
     setup_cron_restart || log warn "Failed to set up cron task, continuing..."
 
     print_summary
+
+    # Write success record to log
+    printf '[%s] [SUCCESS] Installation completed | port=%s | ip=%s\n' \
+        "$(date '+%Y-%m-%d %H:%M:%S')" "${LISTEN_PORT:-unknown}" "$(get_public_ip)" >> "$LOG_FILE" 2>/dev/null || true
 }
 
 main() {
