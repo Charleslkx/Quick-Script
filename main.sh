@@ -26,22 +26,46 @@ I_ARROW="${C_CYAN}[➜]${C_RESET}"
 CHANNEL="main"
 DISTRO="unknown"
 
-LOG_FILE="/var/log/quick-script/install.log"
+LOG_FILE="${QUICK_SCRIPT_LOG_FILE:-/var/log/quick-script/install.log}"
 SCRIPT_TEMP_FILES=()
+LOG_INITIALIZED=0
+ERROR_CONTEXT_REPORTED=0
+
+resolve_log_file() {
+    local preferred_log_file="${QUICK_SCRIPT_LOG_FILE:-/var/log/quick-script/install.log}"
+    local fallback_log_file="/tmp/quick-script-install-${SUDO_USER:-${USER:-unknown}}.log"
+    local log_dir
+
+    LOG_FILE="$preferred_log_file"
+    log_dir=$(dirname "$LOG_FILE")
+    if mkdir -p "$log_dir" 2>/dev/null; then
+        return 0
+    fi
+
+    LOG_FILE="$fallback_log_file"
+    log_dir=$(dirname "$LOG_FILE")
+    mkdir -p "$log_dir" 2>/dev/null || true
+}
 
 init_log() {
+    [[ $LOG_INITIALIZED -eq 1 ]] && return 0
+
     local log_dir
+    resolve_log_file
+    CHANNEL=$(normalize_channel "${ONE_SCRIPT_CHANNEL:-${CHANNEL}}")
     log_dir=$(dirname "$LOG_FILE")
-    mkdir -p "$log_dir" 2>/dev/null || { LOG_FILE="/tmp/quick-script-install.log"; }
+    mkdir -p "$log_dir" 2>/dev/null || true
     {
         printf '\n%s\n' "$(printf '=%.0s' {1..60})"
-        printf '[%s] Installation started | channel=%s | pid=%s\n' \
-            "$(date '+%Y-%m-%d %H:%M:%S')" "${CHANNEL}" "$$"
+        printf '[%s] Quick-Script started | channel=%s | pid=%s | user=%s | euid=%s\n' \
+            "$(date '+%Y-%m-%d %H:%M:%S')" "${CHANNEL}" "$$" \
+            "${SUDO_USER:-${USER:-unknown}}" "${EUID}"
         if [[ -f /etc/os-release ]]; then
             printf '[%s] OS: %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" \
                 "$(. /etc/os-release 2>/dev/null && echo "${PRETTY_NAME:-unknown}")"
         fi
     } >> "$LOG_FILE" 2>/dev/null || true
+    LOG_INITIALIZED=1
 }
 
 cleanup_temp_files() {
@@ -67,6 +91,7 @@ trap cleanup EXIT
 
 trap 'log error "Interrupt signal received, cleaning up..."; exit 130' INT
 trap 'log error "Termination signal received, cleaning up..."; exit 143' TERM
+trap 'record_error_context $? "$BASH_COMMAND" "${BASH_LINENO[0]:-unknown}"' ERR
 
 log() {
     local level=$1
@@ -111,8 +136,83 @@ log() {
 
     # Mirror plain-text output to log file (no ANSI codes)
     if [[ -n "${LOG_FILE:-}" ]]; then
-        printf '[%s] [%-5s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "${level^^}" "$message" >> "$LOG_FILE" 2>/dev/null || true
+        local upper_level
+        upper_level=$(printf "%s" "$level" | tr '[:lower:]' '[:upper:]')
+        printf '[%s] [%-5s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "${upper_level}" "$message" >> "$LOG_FILE" 2>/dev/null || true
     fi
+}
+
+record_error_context() {
+    local exit_code="${1:-1}"
+    local failed_command="${2:-unknown}"
+    local line_no="${3:-unknown}"
+
+    [[ "$exit_code" -eq 0 ]] && return 0
+    [[ $ERROR_CONTEXT_REPORTED -eq 1 ]] && return 0
+    ERROR_CONTEXT_REPORTED=1
+
+    log error "Command failed with exit code ${exit_code} at line ${line_no}: ${failed_command}"
+}
+
+log_output_lines() {
+    local level="$1"
+    local prefix="$2"
+    local file_path="$3"
+    local line
+
+    [[ -s "$file_path" ]] || return 0
+
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        [[ -n "$line" ]] || continue
+        log "$level" "${prefix}${line}"
+    done < "$file_path"
+}
+
+run_logged() {
+    local error_message="$1"
+    shift
+
+    local output_file exit_code
+    output_file=$(mktemp -t quick-script-cmd.XXXXXX)
+    SCRIPT_TEMP_FILES+=("$output_file")
+
+    if "$@" >"$output_file" 2>&1; then
+        return 0
+    fi
+
+    exit_code=$?
+    log error "$error_message"
+    log_output_lines error "  " "$output_file"
+    return "$exit_code"
+}
+
+run_logged_shell() {
+    local error_message="$1"
+    local shell_command="$2"
+
+    run_logged "$error_message" bash -c "$shell_command"
+}
+
+log_service_journal() {
+    local unit_name="$1"
+    local lines="${2:-50}"
+    local output_file
+
+    if ! cmd_exists journalctl; then
+        log warn "journalctl not found, cannot collect ${unit_name} service logs"
+        return 0
+    fi
+
+    output_file=$(mktemp -t quick-script-journal.XXXXXX)
+    SCRIPT_TEMP_FILES+=("$output_file")
+
+    if journalctl -u "$unit_name" -n "$lines" --no-pager >"$output_file" 2>&1; then
+        log_output_lines error "journalctl ${unit_name}: " "$output_file"
+        return 0
+    fi
+
+    log warn "Failed to collect journal logs for ${unit_name}"
+    log_output_lines warn "journalctl ${unit_name}: " "$output_file"
 }
 
 
@@ -229,11 +329,45 @@ EOF
     log info "Locale set to C.UTF-8"
 }
 
-require_root() {
-    if [[ $EUID -ne 0 ]]; then
-        log error "Please run this script as root"
+ensure_root_access() {
+    if [[ $EUID -eq 0 ]]; then
+        return 0
+    fi
+
+    local current_user
+    current_user=$(id -un 2>/dev/null || echo "${USER:-unknown}")
+
+    if ! cmd_exists sudo; then
+        log error "Current user '${current_user}' is not root and sudo is not installed"
+        log error "Please grant this user root/sudo privileges and retry"
         exit 1
     fi
+
+    log info "Detected non-root user '${current_user}', attempting to elevate privileges with sudo..."
+
+    if sudo -n true >/dev/null 2>&1; then
+        :
+    elif is_interactive; then
+        if ! sudo -v; then
+            local sudo_check_output
+            sudo_check_output=$(sudo -n -v 2>&1 || true)
+            log error "Current user '${current_user}' does not have usable sudo privileges"
+            [[ -n "$sudo_check_output" ]] && log error "sudo check: ${sudo_check_output}"
+            log error "Please grant this user root/sudo privileges and retry"
+            exit 1
+        fi
+    else
+        local sudo_check_output
+        sudo_check_output=$(sudo -n -v 2>&1 || true)
+        log error "Current user '${current_user}' cannot obtain sudo privileges in the current session"
+        [[ -n "$sudo_check_output" ]] && log error "sudo check: ${sudo_check_output}"
+        log error "Please grant this user root/sudo privileges and retry"
+        exit 1
+    fi
+
+    log info "sudo privilege confirmed, re-running script as root..."
+    exec sudo --preserve-env=ONE_SCRIPT_CHANNEL,ONE_SCRIPT_BASE_URL,ONE_SCRIPT_DISABLE_CACHE_BUSTER,VISION_PORT,VISION_SERVER_NAME,QUICK_SCRIPT_LOG_FILE \
+        bash "$0" "$@"
 }
 
 check_login_shell() {
@@ -259,22 +393,8 @@ check_login_shell() {
     log warn "This may cause an incomplete PATH environment variable, affecting script execution"
     log info "Current PATH: $PATH"
     log info "It is recommended to use 'su -' or 'sudo -i' for a complete root environment"
-
-    local choice
-    choice=$(read_prompt "Re-execute the script using a full login shell? [Y/n]: " "y")
-
-    case "$choice" in
-        [nN][oO]|[nN])
-            log warn "User chose to continue with current environment, commands may not be found"
-            export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH"
-            log info "Temporarily added system paths to PATH"
-            ;;
-        *)
-            log info "Re-executing the script using a full login shell..."
-            # Re-execute bootstrap.sh so that channel arguments can be parsed correctly
-            exec su - root -c "bash <(curl -fsSL https://raw.githubusercontent.com/charleslkx/quick-script/main/bootstrap.sh) --channel=main $*"
-            ;;
-    esac
+    export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH"
+    log info "Temporarily added system paths to PATH"
 }
 
 detect_release() {
@@ -763,9 +883,11 @@ detect_package_manager() {
 
 install_dependencies() {
     log info "Installing essential dependencies..."
-    eval "$PKG_UPDATE" >/dev/null 2>&1 || true
+    if ! run_logged_shell "Failed to update package index" "$PKG_UPDATE"; then
+        log warn "Package index update failed, continuing to attempt installation"
+    fi
     local packages=(curl tar gzip openssl coreutils util-linux $PKG_EXTRA)
-    eval "$PKG_INSTALL ${packages[*]}" >/dev/null
+    run_logged_shell "Failed to install essential dependencies: ${packages[*]}" "$PKG_INSTALL ${packages[*]}"
 }
 
 ensure_network_stack() {
@@ -938,15 +1060,17 @@ detect_arch() {
 
 fetch_latest_singbox() {
     local api_url="https://api.github.com/repos/SagerNet/sing-box/releases/latest"
-    local tag max_retries=3 retry_count=0
+    local tag response max_retries=3 retry_count=0
 
     while [[ $retry_count -lt $max_retries ]]; do
-        tag=$(curl -s --max-time 30 "$api_url" 2>/dev/null | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1 || true)
+        response=$(curl -fsSL --max-time 30 "$api_url" 2>&1 || true)
+        tag=$(printf "%s\n" "$response" | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1 || true)
         if [[ -n $tag ]]; then
             break
         fi
         retry_count=$((retry_count + 1))
         log warn "Failed to fetch sing-box version info, retrying ${retry_count}/${max_retries}..."
+        [[ -n "$response" ]] && log warn "GitHub API response: ${response}"
         sleep 3
     done
 
@@ -982,7 +1106,8 @@ install_singbox() {
     local download_success=0
 
     while [[ $retry_count -lt $max_retries ]]; do
-        if curl -Ls --max-time 120 -o "$tmpdir/sing-box.tar.gz" "$SINGBOX_DOWNLOAD_URL" 2>/dev/null; then
+        if run_logged "Failed to download sing-box archive from ${SINGBOX_DOWNLOAD_URL}" \
+            curl -fLsS --max-time 120 -o "$tmpdir/sing-box.tar.gz" "$SINGBOX_DOWNLOAD_URL"; then
             if [[ -s "$tmpdir/sing-box.tar.gz" ]]; then
                 download_success=1
                 break
@@ -1003,10 +1128,7 @@ install_singbox() {
         exit 1
     fi
 
-    if ! tar -xf "$tmpdir/sing-box.tar.gz" -C "$tmpdir" 2>/dev/null; then
-        log error "Failed to extract sing-box"
-        exit 1
-    fi
+    run_logged "Failed to extract sing-box archive" tar -xf "$tmpdir/sing-box.tar.gz" -C "$tmpdir"
 
     local extracted
     extracted=$(find "$tmpdir" -maxdepth 1 -type d -name "sing-box*" | head -n 1)
@@ -1015,10 +1137,8 @@ install_singbox() {
         exit 1
     fi
 
-    install -Dm755 "${extracted}/sing-box" /usr/local/bin/sing-box || {
-        log error "Failed to install sing-box to /usr/local/bin"
-        exit 1
-    }
+    run_logged "Failed to install sing-box to /usr/local/bin" \
+        install -Dm755 "${extracted}/sing-box" /usr/local/bin/sing-box
 
     if [[ ! -x /usr/local/bin/sing-box ]]; then
         log error "sing-box executable cannot be run after installation"
@@ -1028,10 +1148,12 @@ install_singbox() {
     mkdir -p /usr/local/share/sing-box
 
     if [[ -f "${extracted}/geoip.db" ]]; then
-        install -Dm644 "${extracted}/geoip.db" /usr/local/share/sing-box/geoip.db
+        run_logged "Failed to install geoip.db" \
+            install -Dm644 "${extracted}/geoip.db" /usr/local/share/sing-box/geoip.db
     fi
     if [[ -f "${extracted}/geosite.db" ]]; then
-        install -Dm644 "${extracted}/geosite.db" /usr/local/share/sing-box/geosite.db
+        run_logged "Failed to install geosite.db" \
+            install -Dm644 "${extracted}/geosite.db" /usr/local/share/sing-box/geosite.db
     fi
 
     rm -rf "$tmpdir" 2>/dev/null || true
@@ -1161,7 +1283,13 @@ generate_short_id() {
 
 generate_reality_keys() {
     local output
-    output=$(sing-box generate reality-keypair)
+    output=$(sing-box generate reality-keypair 2>&1) || {
+        log error "Reality keypair generation failed"
+        printf "%s\n" "$output" | while IFS= read -r line; do
+            [[ -n "$line" ]] && log error "  ${line}"
+        done
+        exit 1
+    }
     PRIVATE_KEY=$(printf "%s\n" "$output" | grep -i "PrivateKey" | awk '{print $2}')
     PUBLIC_KEY=$(printf "%s\n" "$output" | grep -i "PublicKey" | awk '{print $2}')
     if [[ -z $PRIVATE_KEY || -z $PUBLIC_KEY ]]; then
@@ -1355,28 +1483,32 @@ EOF
     chmod 644 "$service_file"
 
     if command -v sing-box >/dev/null 2>&1; then
-        if ! sing-box check -c /etc/sing-box/config.json >/dev/null 2>&1; then
+        local validation_output
+        validation_output=$(sing-box check -c /etc/sing-box/config.json 2>&1) || {
             log error "sing-box config validation failed, please check /etc/sing-box/config.json"
-            sing-box check -c /etc/sing-box/config.json 2>&1 || true
+            printf "%s\n" "$validation_output" | while IFS= read -r line; do
+                [[ -n "$line" ]] && log error "  ${line}"
+            done
             return 1
-        fi
+        }
     fi
 
-    if ! systemctl daemon-reload 2>/dev/null; then
+    if ! run_logged "systemd daemon-reload failed" systemctl daemon-reload; then
         log warn "systemd daemon-reload failed"
     fi
 
-    if systemctl enable --now sing-box.service 2>/dev/null; then
+    if run_logged "Failed to enable and start sing-box.service" systemctl enable --now sing-box.service; then
         sleep 2
         if systemctl is-active --quiet sing-box.service 2>/dev/null; then
             log info "sing-box service started and enabled on boot"
         else
             log error "sing-box service enabled but failed to start, check logs: journalctl -u sing-box -n 50 --no-pager"
-            journalctl -u sing-box -n 50 --no-pager 2>/dev/null || true
+            log_service_journal "sing-box" 50
             return 1
         fi
     else
         log error "sing-box service failed to enable"
+        log_service_journal "sing-box" 50
         return 1
     fi
 }
@@ -1534,8 +1666,9 @@ install_workflow() {
 }
 
 main() {
-    require_root
-    check_login_shell
+    init_log
+    ensure_root_access "$@"
+    check_login_shell "$@"
     init_channel
     local action=${1:-}
     [[ -z "$action" ]] && action="install"
