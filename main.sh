@@ -366,8 +366,20 @@ ensure_root_access() {
     fi
 
     log info "sudo privilege confirmed, re-running script as root..."
-    exec sudo --preserve-env=ONE_SCRIPT_CHANNEL,ONE_SCRIPT_BASE_URL,ONE_SCRIPT_DISABLE_CACHE_BUSTER,VISION_PORT,VISION_SERVER_NAME,QUICK_SCRIPT_LOG_FILE \
-        bash "$0" "$@"
+
+    local script_path="$0"
+    if [[ ! -f "$script_path" ]] && [[ -f "${BASH_SOURCE[0]}" ]]; then
+        script_path="${BASH_SOURCE[0]}"
+    fi
+
+    if [[ -f "$script_path" ]]; then
+        exec sudo --preserve-env=ONE_SCRIPT_CHANNEL,ONE_SCRIPT_BASE_URL,ONE_SCRIPT_DISABLE_CACHE_BUSTER,VISION_PORT,VISION_SERVER_NAME,QUICK_SCRIPT_LOG_FILE \
+            bash "$script_path" "$@"
+    else
+        log error "Script source is not a file (e.g., piped to bash). Re-running with sudo failed."
+        log error "Please use 'curl -fsSL ... | sudo bash' to run directly."
+        exit 1
+    fi
 }
 
 check_login_shell() {
