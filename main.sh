@@ -976,34 +976,6 @@ EOF
     fi
 }
 
-setup_cron_restart() {
-    log info "Configuring daily restart cron job (UTC+8 5:00)..."
-    
-    local cron_cmd="systemctl restart sing-box"
-    local cron_file="/var/spool/cron/crontabs/root"
-    [ ! -f "$cron_file" ] && cron_file="/var/spool/cron/root"
-
-    local hour=21
-    if date +%z | grep -q "+0800"; then
-        hour=5
-    fi
-    
-    local cron_job="0 $hour * * * $cron_cmd"
-    
-    if command -v crontab >/dev/null 2>&1; then
-        local current_cron
-        current_cron=$(crontab -l 2>/dev/null || true)
-        
-        if echo "$current_cron" | grep -q "$cron_cmd"; then
-            log info "Restart cron job already exists, skipping"
-        else
-            (echo "$current_cron"; echo "$cron_job") | crontab -
-            log info "Added cron job: $cron_job"
-        fi
-    else
-        log warn "crontab not found, skipping cron job setup"
-    fi
-}
 
 check_existing_installation() {
     local config="/etc/sing-box/config.json"
@@ -1608,7 +1580,7 @@ print_summary() {
 
 install_workflow() {
     local step=0
-    local total_steps=13
+    local total_steps=12
 
     # Initialise log file before any log() calls so everything is captured
     init_log
@@ -1666,10 +1638,6 @@ install_workflow() {
     log info "[$step/$total_steps] Creating systemd service..."
     create_service || { log error "Failed to create system service"; exit 1; }
 
-    step=$((step + 1))
-    log info "[$step/$total_steps] Setting up cron tasks..."
-    setup_cron_restart || log warn "Failed to set up cron task, continuing..."
-
     print_summary
 
     # Write success record to log
@@ -1682,6 +1650,7 @@ main() {
     ensure_root_access "$@"
     check_login_shell "$@"
     init_channel
+
     local action=${1:-}
     [[ -z "$action" ]] && action="install"
     case "$action" in
