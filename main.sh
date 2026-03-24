@@ -980,34 +980,34 @@ EOF
 check_existing_installation() {
     local config="/etc/sing-box/config.json"
     local pub_key_file="/etc/sing-box/public.key"
-    
+
     if [[ -f "$config" ]]; then
         log warn "Detected existing sing-box service installation"
 
         local config_content
         config_content=$(tr -d '[:space:]' < "$config")
-        
+
         local port uuid sni server_ip short_id
-        
+
         port=$(echo "$config_content" | sed -n 's/.*"listen_port":\([0-9]*\).*/\1/p')
         uuid=$(echo "$config_content" | sed -n 's/.*"uuid":"\([^"]*\)".*/\1/p')
         sni=$(echo "$config_content" | sed -n 's/.*"server_name":"\([^"]*\)".*/\1/p')
         short_id=$(echo "$config_content" | sed -n 's/.*"short_id":\["[^"]*","\([^"]*\)".*/\1/p')
         [[ -z "$short_id" ]] && short_id=$(echo "$config_content" | sed -n 's/.*"short_id":\["\([^"]*\)".*/\1/p')
-        
+
         [[ -z "$port" ]] && port="unknown"
         [[ -z "$uuid" ]] && uuid="unknown"
         [[ -z "$sni" ]] && sni="unknown"
         [[ -z "$short_id" ]] && short_id="unknown"
-        
+
         server_ip=$(get_public_ip)
-        
+
         log info "Current configuration details:"
         log info "Port: $port"
         log info "UUID: $uuid"
         log info "SNI: $sni"
         log info "Config path: $config"
-        
+
         if [[ -f "$pub_key_file" ]]; then
             local pbk
             pbk=$(cat "$pub_key_file")
@@ -1018,15 +1018,28 @@ check_existing_installation() {
         fi
 
         local choice
-        choice=$(read_prompt "Do you want to reinstall? [y/N]: " "n")
-        
+        choice=$(read_prompt "Do you want to uninstall the existing installation? [y/N]: " "n")
+
         case "$choice" in
             [yY][eE][sS]|[yY])
-                log info "User chose to reinstall, cleaning up old service..."
+                log info "User chose to uninstall, removing old service..."
                 remove_singbox
+
+                # Ask about reinstall after uninstall
+                local reinstall_choice
+                reinstall_choice=$(read_prompt "Uninstallation completed. Do you want to reinstall? [y/N]: " "n")
+                case "$reinstall_choice" in
+                    [yY][eE][sS]|[yY])
+                        log info "User chose to reinstall, proceeding with installation..."
+                        ;;
+                    *)
+                        log info "User chose not to reinstall, script exiting"
+                        exit 0
+                        ;;
+                esac
                 ;;
             *)
-                log info "User cancelled installation or no input detected, scripting exiting"
+                log info "User chose not to uninstall, script exiting"
                 exit 0
                 ;;
         esac
